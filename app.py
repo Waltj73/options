@@ -95,3 +95,49 @@ if target and target > 0:
         cc3.metric("Profit at Target", f"${expected_profit:,.2f}")
 
 st.caption("Note: For options/futures, you can adapt size to contract multipliers and margin rules.")
+
+st.divider()
+st.subheader("Trade Quality Check")
+
+# Minimum acceptable R
+min_r_required = st.number_input(
+    "Minimum R Required",
+    value=2.0,
+    step=0.25
+)
+
+good_trade = True
+reasons = []
+
+# R multiple check
+if r_multiple is not None:
+    if r_multiple < min_r_required:
+        good_trade = False
+        reasons.append("Reward is too small vs risk.")
+else:
+    good_trade = False
+    reasons.append("No valid profit target set.")
+
+# Position size sanity check
+if size <= 0:
+    good_trade = False
+    reasons.append("Position size invalid.")
+
+# Stop distance %
+stop_pct = (risk_per_share / entry) * 100
+if stop_pct < 0.2:
+    reasons.append("Stop may be too tight.")
+if stop_pct > 10:
+    reasons.append("Stop distance very large.")
+
+# Final decision
+if good_trade:
+    st.success("✅ Trade meets your minimum criteria.")
+else:
+    st.error("❌ Trade does NOT meet criteria.")
+
+if reasons:
+    st.write("Notes:")
+    for r in reasons:
+        st.write("-", r)
+
