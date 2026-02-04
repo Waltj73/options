@@ -297,7 +297,8 @@ def green_check(v: bool) -> str:
     return "✅" if bool(v) else ""
 
 
-def style_checks(df: pd.DataFrame, check_cols: List[str]) -> pd.io.formats.style.Styler:
+def style_checks(df: pd.DataFrame, check_cols: List[str]):
+
     def _style_cell(val):
         if val == "✅":
             return "color: #16a34a; font-weight: 700;"  # green-600
