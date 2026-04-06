@@ -70,7 +70,7 @@ if st.sidebar.button("🔍 Scan & Grade"):
         raw = get_data(t)
         if raw:
             grade, summary = grade_setup(raw)
-            if grade != "D": # Loosened: Shows everything except "No Setup"
+            if True:: # Loosened: Shows everything except "No Setup"
                 results.append({
                     "Grade": grade, "Ticker": t, "Price": raw['Price'], 
                     "Trend": "✅" if raw['Trend'] == "Bullish" else "❌",
