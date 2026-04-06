@@ -3,134 +3,107 @@ import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
 
-# --- 1. SETTINGS & CONFIG ---
-st.set_page_config(page_title="Ultimate Squeeze Scanner", layout="wide")
+# --- 1. CONFIGURATION & UI ---
+st.set_page_config(page_title="Nasdaq 50 Squeeze Pro", layout="wide")
 
-# --- 2. HELPERS: DATA FETCHING & LOGIC ---
-@st.cache_data(ttl=3600) # Caches ticker lists for 1 hour
-def get_index_tickers(index_name):
-    try:
-        if index_name == "S&P 500":
-            url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-            return pd.read_html(url)[0]['Symbol'].str.replace('.', '-', regex=False).tolist()
-        elif index_name == "Nasdaq 100":
-            url = "https://en.wikipedia.org/wiki/Nasdaq-100"
-            return pd.read_html(url)[4]['Ticker'].tolist()
-    except Exception:
-        return ["AAPL", "MSFT", "TSLA", "NVDA", "AMD"] # Fallback
-    return []
+# The "Big 50" - Hand-picked for liquidity and volatility
+NASDAQ_50 = [
+    "AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "GOOG", "TSLA", "AVGO", "PEP", 
+    "ASML", "COST", "ADBE", "AZN", "LIN", "AMD", "TXN", "INTC", "TMUS", "AMAT", 
+    "QCOM", "AMGN", "ISRG", "HON", "VRTX", "BKNG", "SBUX", "PANW", "MDLZ", "INTU", 
+    "REGN", "GILD", "ADI", "LRCX", "MU", "MELI", "SNPS", "CDNS", "KLAC", "CSX", 
+    "MAR", "PYPL", "ORLY", "MNST", "ASML", "ADSK", "ANSS", "CPRT", "KDP", "MCHP"
+]
 
-def get_squeeze_status(ticker, interval):
+# --- 2. THE LOGIC ENGINE ---
+def get_squeeze_data(ticker):
     try:
-        # Download data (2y for Daily, 60d for Intraday to keep it fast)
-        period = "2y" if "d" in interval else "60d"
-        data = yf.download(ticker, period=period, interval=interval, progress=False)
+        # Fetch 6 months of data (Optimal for 21 EMA & Squeeze calculation speed)
+        data = yf.download(ticker, period="6mo", interval="1d", progress=False)
+        h4_data = yf.download(ticker, period="1mo", interval="1h", progress=False) # 4h equivalent
         
-        if data.empty or len(data) < 30:
-            return None
+        if data.empty or h4_data.empty: return None
 
-        # TTM Squeeze Calculation
-        # Returns: SQZ_ON (Red Dot), SQZ_OFF (Green Dot), SQZ_INC (Histogram)
+        # --- Daily Analysis ---
         sqz = data.ta.squeeze(lazy_limit=True)
-        
-        # Trend Filter (21 EMA)
         ema21 = ta.ema(data['Close'], length=21)
         
-        df = pd.concat([data['Close'], sqz, ema21], axis=1)
-        df.columns = ['Close', 'SQZ_ON', 'SQZ_OFF', 'SQZ_NO', 'SQZ_INC', 'SQZ_DEC', 'EMA21']
+        # Calculate Dot Count (How many consecutive red dots?)
+        # We reverse the series and count until the first '0' (no squeeze)
+        sqz_series = sqz['SQZ_ON'].iloc[::-1]
+        dot_count = 0
+        for val in sqz_series:
+            if val == 1: dot_count += 1
+            else: break
+            
+        last_d = data.iloc[-1]
+        last_sqz = sqz.iloc[-1]
         
-        last = df.iloc[-1]
-        prev = df.iloc[-2]
+        # --- 4-Hour Analysis ---
+        # Note: yfinance 1h data used to simulate 4h (last 4 bars)
+        h4_sqz = h4_data.ta.squeeze(lazy_limit=True).iloc[-1]
 
         return {
-            "in_squeeze": bool(last['SQZ_ON'] == 1),
-            "fired_long": bool(prev['SQZ_ON'] == 1 and last['SQZ_ON'] == 0 and last['SQZ_INC'] > 0),
-            "bullish": bool(last['Close'] > last['EMA21']),
-            "hist": last['SQZ_INC']
+            "Ticker": ticker,
+            "Price": round(float(last_d['Close']), 2),
+            "Trend": "Bullish" if last_d['Close'] > ema21.iloc[-1] else "Bearish",
+            "Daily_Sqz": bool(last_sqz['SQZ_ON'] == 1),
+            "Dot_Count": dot_count,
+            "4H_Sqz": bool(h4_sqz['SQZ_ON'] == 1),
+            "Fired": bool(sqz.iloc[-2]['SQZ_ON'] == 1 and last_sqz['SQZ_ON'] == 0),
+            "Hist": round(float(last_sqz['SQZ_INC']), 3)
         }
     except:
         return None
 
-# --- 3. SIDEBAR UI ---
-st.sidebar.title("Configuration")
-mode = st.sidebar.radio("Ticker Source", ["Index Auto-Load", "Manual Entry"])
+# --- 3. MAIN INTERFACE ---
+st.title("⚡ Nasdaq 50 Squeeze Dash")
+st.caption("Scanning the top 50 Nasdaq names for compression setups and trend alignment.")
 
-if mode == "Index Auto-Load":
-    idx_choice = st.sidebar.selectbox("Select Index", ["S&P 500", "Nasdaq 100"])
-    all_tickers = get_index_tickers(idx_choice)
-    tickers = st.sidebar.multiselect("Select Tickers to Scan", all_tickers, default=all_tickers[:20])
-    st.sidebar.info(f"Scanning {len(tickers)} symbols.")
-else:
-    manual_input = st.sidebar.text_area("Enter Tickers (Comma Separated)", "AAPL, TSLA, NVDA, COIN, BTC-USD")
-    tickers = [t.strip().upper() for t in manual_input.split(",") if t.strip()]
-
-run_button = st.sidebar.button("🚀 Start Scan")
-
-# --- 4. MAIN DASHBOARD ---
-st.title("📈 Pro-Squeeze Swing Dashboard")
-st.markdown("""
-This system identifies **Energy Compression** (Squeezes) aligning across multiple timeframes.
-- **Stacked**: Squeeze active on both Daily & 4-Hour charts.
-- **Trend**: Only highlights setups where Price is above the 21 EMA.
-""")
-
-if run_button:
+if st.button("🚀 Run Nasdaq Scan"):
     results = []
     bar = st.progress(0)
     
-    for i, symbol in enumerate(tickers):
-        d_data = get_squeeze_status(symbol, "1d")
-        h4_data = get_squeeze_status(symbol, "4h")
-        
-        if d_data and h4_data:
-            # Logic Synthesis
-            is_stacked = d_data['in_squeeze'] and h4_data['in_squeeze']
-            trend_label = "✅ Bullish" if d_data['bullish'] else "❌ Bearish"
-            
-            setup_label = "Scanning..."
-            if d_data['bullish']:
-                if is_stacked: setup_label = "⭐ STACKED SQUEEZE"
-                elif d_data['fired_long']: setup_label = "🚀 DAILY FIRE"
-                elif h4_data['fired_long']: setup_label = "🔥 4H FIRE"
-                elif d_data['in_squeeze']: setup_label = "⏳ Daily Building"
-                else: setup_label = "Searching..."
-            
-            # We only want to see actionable setups or active squeezes
-            if setup_label != "Searching...":
+    for i, ticker in enumerate(NASDAQ_50):
+        status = get_squeeze_data(ticker)
+        if status:
+            # Filtering for "Actionable" logic
+            # We want: Current Squeezes OR Just Fired
+            if status['Daily_Sqz'] or status['Fired']:
+                
+                # Determine Setup Type
+                setup = "Building"
+                if status['Fired'] and status['Trend'] == "Bullish": setup = "🚀 FIRE (LONG)"
+                elif status['Daily_Sqz'] and status['4H_Sqz']: setup = "⭐ STACKED"
+                elif status['Daily_Sqz']: setup = f"⏳ {status['Dot_Count']} Dots"
+                
                 results.append({
-                    "Ticker": symbol,
-                    "Setup Type": setup_label,
-                    "Daily Trend": trend_label,
-                    "Daily Sqz": "RED" if d_data['in_squeeze'] else "OFF",
-                    "4H Sqz": "RED" if h4_data['in_squeeze'] else "OFF",
-                    "Momentum": round(d_data['hist'], 3)
+                    "Ticker": status['Ticker'],
+                    "Price": status['Price'],
+                    "Setup": setup,
+                    "Trend": "✅" if status['Trend'] == "Bullish" else "❌",
+                    "Dots": status['Dot_Count'],
+                    "4H": "RED" if status['4H_Sqz'] else "OFF",
+                    "Energy": status['Hist']
                 })
-        
-        bar.progress((i + 1) / len(tickers))
+        bar.progress((i + 1) / len(NASDAQ_50))
 
-    # --- 5. RESULTS DISPLAY ---
     if results:
-        final_df = pd.DataFrame(results)
+        df = pd.DataFrame(results).sort_values(by="Dots", ascending=False)
         
-        # Color coding logic
-        def color_map(val):
-            if "⭐" in str(val): return 'background-color: #004d00; color: white' # Emerald
-            if "🚀" in str(val) or "🔥" in str(val): return 'background-color: #003366; color: white' # Navy
-            return ''
+        # UI Styling
+        def highlight_rows(row):
+            if "⭐" in str(row.Setup): return ['background-color: #1b4332'] * len(row)
+            if "🚀" in str(row.Setup): return ['background-color: #0d47a1'] * len(row)
+            return [''] * len(row)
 
-        st.subheader(f"Found {len(results)} Potential Setups")
-        st.dataframe(final_df.style.applymap(color_map, subset=['Setup Type']), use_container_width=True)
+        st.subheader("Active Setups Found")
+        st.dataframe(df.style.apply(highlight_rows, axis=1), use_container_width=True)
         
-        # Display actionable metrics
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Stacked Squeezes", len(final_df[final_df['Setup Type'].str.contains("⭐")]))
-        c2.metric("New Fires", len(final_df[final_df['Setup Type'].str.contains("🚀|🔥")]))
-        c3.metric("Trend Alignment", f"{int((len(final_df)/len(tickers))*100)}%")
+        # Insight Column
+        st.info("**Strategy Tip:** Focus on tickers with 5+ Dots that are also Bullish (✅). These are high-probability 'Coiled Springs'.")
     else:
-        st.warning("No active Squeezes or Fires found for these tickers.")
-else:
-    st.info("Configure your tickers in the sidebar and hit **Start Scan** to begin.")
+        st.success("No active squeezes in the Nasdaq 50 right now. Markets might be in an extended 'Expansion' phase.")
 
-# --- FOOTER ---
-st.markdown("---")
-st.caption("v1.0 | Integrated TTM Squeeze + Trend Filter Dashboard")
+else:
+    st.info("Click the button above to analyze the Nasdaq 50.")
