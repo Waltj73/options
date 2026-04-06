@@ -1,91 +1,79 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import pandas_ta as ta
 
-st.set_page_config(page_title="Pro-Squeeze Grader", layout="wide")
+st.set_page_config(page_title="The Strat Scanner", layout="wide")
 
-# --- 1. DATASETS ---
-MARKET_CAP_50 = ["NVDA", "AAPL", "MSFT", "AMZN", "META", "GOOGL", "TSLA", "AVGO", "COST", "NFLX", "AMD", "ADBE", "CRM", "QCOM", "TXN"]
-VOLUME_LEADERS_50 = ["PLTR", "SOFI", "MARA", "RIOT", "COIN", "HOOD", "AFRM", "UPST", "RKLB", "NIO", "TSLA", "NVDA", "AMD", "INTC", "GME"]
+# --- 1. THE STRAT LOGIC ---
+def get_strat_scenario(df):
+    if len(df) < 2: return "0", "Unknown"
+    
+    curr = df.iloc[-1]
+    prev = df.iloc[-2]
+    
+    # Identify Scenario
+    if curr['High'] <= prev['High'] and curr['Low'] >= prev['Low']:
+        return "1", "Inside (Consolidation)"
+    elif curr['High'] > prev['High'] and curr['Low'] < prev['Low']:
+        return "3", "Outside (Broadening)"
+    elif curr['High'] > prev['High']:
+        return "2U", "Up (Bullish)"
+    elif curr['Low'] < prev['Low']:
+        return "2D", "Down (Bearish)"
+    return "2", "Directional"
 
-# --- 2. THE GRADING ENGINE ---
-def grade_setup(data):
-    ticker = data['Ticker']
-    is_bullish = data['Trend'] == "Bullish"
-    d_sqz = data['Daily_Sqz']
-    h4_sqz = data['4H_Sqz']
-    dots = data['Dot_Count']
-    fired = data['Fired']
-
-    if is_bullish and d_sqz and h4_sqz:
-        return "A+", f"The Holy Grail. {ticker} is trending higher and compressed on two timeframes. Explosive potential."
-    elif is_bullish and d_sqz and dots >= 5:
-        return "A", f"Strong Bullish Coil. {ticker} has {dots} days of energy built up above the trend line."
-    elif is_bullish and d_sqz:
-        return "B", f"Early Bullish Squeeze. Trend is right, but the squeeze is still in the early 'coiling' phase."
-    elif is_bullish and fired:
-        return "A (Fired)", f"Momentum Release. The squeeze just fired long. Watch for follow-through."
-    elif not is_bullish and d_sqz:
-        return "C", f"Bearish Squeeze. {ticker} is coiling but remains below the 21 EMA. High risk of a breakdown."
-    return "D", "No significant squeeze activity or trend alignment."
-
-def get_data(ticker):
+def get_strat_data(ticker):
     try:
-        d = yf.download(ticker, period="6mo", interval="1d", progress=False)
-        h4 = yf.download(ticker, period="1mo", interval="1h", progress=False)
-        if d.empty or h4.empty: return None
+        # Fetch Month, Week, Day
+        m_df = yf.download(ticker, period="3mo", interval="1mo", progress=False)
+        w_df = yf.download(ticker, period="3mo", interval="1wk", progress=False)
+        d_df = yf.download(ticker, period="1mo", interval="1d", progress=False)
+
+        if m_df.empty or w_df.empty or d_df.empty: return None
+
+        # Determine Continuity (Is Price > Open?)
+        m_dir = "UP" if m_df['Close'].iloc[-1] > m_df['Open'].iloc[-1] else "DOWN"
+        w_dir = "UP" if w_df['Close'].iloc[-1] > w_df['Open'].iloc[-1] else "DOWN"
+        d_dir = "UP" if d_df['Close'].iloc[-1] > d_df['Open'].iloc[-1] else "DOWN"
         
-        sqz = d.ta.squeeze(lazy_limit=True)
-        ema21 = ta.ema(d['Close'], length=21).iloc[-1]
-        
-        # Dot counting logic
-        sqz_series = sqz['SQZ_ON'].iloc[::-1]
-        dots = 0
-        for val in sqz_series:
-            if val == 1: dots += 1
-            else: break
+        ftfc = "✅ FULL UP" if (m_dir == "UP" and w_dir == "UP" and d_dir == "UP") else \
+               "🛑 FULL DOWN" if (m_dir == "DOWN" and w_dir == "DOWN" and d_dir == "DOWN") else "Partial"
+
+        scenario, desc = get_strat_scenario(d_df)
 
         return {
             "Ticker": ticker,
-            "Price": round(float(d['Close'].iloc[-1]), 2),
-            "Trend": "Bullish" if d['Close'].iloc[-1] > ema21 else "Bearish",
-            "Daily_Sqz": bool(sqz['SQZ_ON'].iloc[-1] == 1),
-            "4H_Sqz": bool(h4.ta.squeeze(lazy_limit=True)['SQZ_ON'].iloc[-1] == 1),
-            "Dot_Count": dots,
-            "Fired": bool(sqz['SQZ_ON'].iloc[-2] == 1 and sqz['SQZ_ON'].iloc[-1] == 0),
-            "Hist": round(float(sqz['SQZ_INC'].iloc[-1]), 3)
+            "Price": round(float(d_df['Close'].iloc[-1]), 2),
+            "Scenario": scenario,
+            "Continuity": ftfc,
+            "M/W/D": f"{m_dir}/{w_dir}/{d_dir}"
         }
     except: return None
 
-# --- 3. UI ---
-st.title("🎓 Pro-Squeeze Setup Grader")
-scan_mode = st.sidebar.radio("Universe", ["Market Cap Titans", "Volume Movers"])
-tickers = MARKET_CAP_50 if "Titans" in scan_mode else VOLUME_LEADERS_50
+# --- 2. UI ---
+st.title("🎯 The Strat: Continuity Scanner")
+st.caption("Scans for Scenarios (1, 2, 3) and Full Timeframe Continuity (FTFC)")
 
-if st.sidebar.button("🔍 Scan & Grade"):
+TICKERS = ["NVDA", "TSLA", "AAPL", "AMD", "MSFT", "META", "AMZN", "PLTR", "PYPL", "MARA", "COIN", "SOFI"]
+
+if st.button("🚀 Run Strat Scan"):
     results = []
     bar = st.progress(0)
-    for i, t in enumerate(tickers):
-        raw = get_data(t)
-        if raw:
-            grade, summary = grade_setup(raw)
-            if grade != "D": # Loosened: Shows everything except "No Setup"
-                results.append({
-                    "Grade": grade, "Ticker": t, "Price": raw['Price'], 
-                    "Trend": "✅" if raw['Trend'] == "Bullish" else "❌",
-                    "Sqz (D/4H)": f"{raw['Daily_Sqz']}/{raw['4H_Sqz']}",
-                    "Summary": summary
-                })
-        bar.progress((i+1)/len(tickers))
+    for i, t in enumerate(TICKERS):
+        data = get_strat_data(t)
+        if data: results.append(data)
+        bar.progress((i+1)/len(TICKERS))
 
     if results:
-        df = pd.DataFrame(results).sort_values(by="Grade")
-        def color_grade(val):
-            color = '#1e3a8a' if 'A' in val else '#374151'
-            if val == 'A+': color = '#064e3b'
-            return f'background-color: {color}; color: white'
+        df = pd.DataFrame(results)
+        
+        # Color coding for The Strat
+        def highlight_strat(row):
+            if "FULL UP" in row.Continuity: return ['background-color: #064e3b; color: white'] * len(row)
+            if "FULL DOWN" in row.Continuity: return ['background-color: #7f1d1d; color: white'] * len(row)
+            if row.Scenario == "1": return ['background-color: #3b82f6; color: white'] * len(row) # Blue for Inside Bars
+            return [''] * len(row)
 
-        st.table(df.style.applymap(color_grade, subset=['Grade']))
+        st.table(df.style.apply(highlight_strat, axis=1))
     else:
-        st.info("No Squeezes found in this list.")
+        st.error("No data found. Check your ticker list.")
