@@ -1,143 +1,114 @@
-# app.py
-import math
 import streamlit as st
+import yfinance as yf
+import pandas as pd
+import pandas_ta as ta
+from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Trading Calculator", layout="centered")
+# --- STREAMLIT UI CONFIG ---
+st.set_page_config(page_title="Pro-Squeeze Scanner", layout="wide")
+st.title("🚀 Multi-Timeframe Squeeze Scanner")
+st.markdown("""
+This scanner looks for **Energy Compression** (TTM Squeeze) combined with **Trend Direction** (21 EMA).
+* **Stacked Squeeze**: Active squeeze on both Daily and 4H timeframes.
+* **Trend Filter**: Price must be above the 21 EMA for Bullish setups.
+""")
 
-st.title("📈 Trading Calculator (Basic)")
-st.caption("Enter entry, stop, and risk to calculate size, total cost, and risk metrics.")
+# --- SIDEBAR CONTROLS ---
+st.sidebar.header("Scanner Settings")
+ticker_input = st.sidebar.text_area("Enter Tickers (comma separated)", 
+                                   "AAPL, TSLA, MSFT, NVDA, AMD, GOOGL, AMZN, META, COIN, MARA, RIOT, SPY, QQQ")
+tickers = [t.strip().upper() for t in ticker_input.split(",")]
 
-# --- Inputs ---
-col1, col2 = st.columns(2)
+# --- CORE LOGIC ---
+def get_squeeze_status(ticker, interval):
+    try:
+        # Fetch slightly more data to ensure EMA and Squeeze stabilize
+        data = yf.download(ticker, period="1y", interval=interval, progress=False)
+        if data.empty or len(data) < 30: 
+            return None
 
-with col1:
-    side = st.selectbox("Side", ["Long", "Short"])
-    entry = st.number_input("Entry Price", min_value=0.0, value=100.00, step=0.01, format="%.2f")
-    stop = st.number_input("Stop Price", min_value=0.0, value=98.00, step=0.01, format="%.2f")
+        # 1. TTM Squeeze via Pandas_TA
+        # Returns columns: SQZ_ON (Red Dot), SQZ_OFF (Green Dot), SQZ_INC (Histogram)
+        sqz = data.ta.squeeze(lazy_limit=True)
+        
+        # 2. Trend Filter (21 EMA)
+        ema21 = ta.ema(data['Close'], length=21)
+        
+        df = pd.concat([data['Close'], sqz, ema21], axis=1)
+        df.columns = ['Close', 'SQZ_ON', 'SQZ_OFF', 'SQZ_NO', 'SQZ_INC', 'SQZ_DEC', 'EMA21']
+        
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
 
-with col2:
-    risk_dollars = st.number_input("Max Risk ($)", min_value=0.0, value=200.00, step=10.0, format="%.2f")
-    target = st.number_input("Target Price (optional)", min_value=0.0, value=0.0, step=0.01, format="%.2f")
-    round_down = st.checkbox("Round size down to whole shares", value=True)
+        return {
+            "in_squeeze": bool(last['SQZ_ON'] == 1),
+            "fired_long": bool(prev['SQZ_ON'] == 1 and last['SQZ_ON'] == 0 and last['SQZ_INC'] > 0),
+            "bullish": bool(last['Close'] > last['EMA21']),
+            "hist": last['SQZ_INC']
+        }
+    except Exception as e:
+        return None
 
-st.divider()
+# --- SCANNER EXECUTION ---
+if st.sidebar.button("Run Scanner"):
+    results = []
+    progress_bar = st.progress(0)
+    
+    for i, symbol in enumerate(tickers):
+        daily = get_squeeze_status(symbol, "1d")
+        four_h = get_squeeze_status(symbol, "4h")
+        
+        if daily and four_h:
+            # Determine Status
+            is_stacked = daily['in_squeeze'] and four_h['in_squeeze']
+            
+            # Trend Check (Using Daily as the primary anchor)
+            trend_status = "✅ Bullish" if daily['bullish'] else "❌ Bearish"
+            
+            # Labeling the "Trade Idea"
+            trade_idea = "Neutral"
+            if daily['bullish']:
+                if is_stacked: trade_idea = "⭐ STACKED SQUEEZE"
+                elif daily['fired_long']: trade_idea = "🚀 DAILY FIRE"
+                elif four_h['fired_long']: trade_idea = "🔥 4H FIRE"
+                elif daily['in_squeeze']: trade_idea = "⏳ Daily Squeezing"
 
-# --- Calculations ---
-def calc_risk_per_share(side: str, entry: float, stop: float) -> float:
-    if side == "Long":
-        return entry - stop
+            results.append({
+                "Ticker": symbol,
+                "Setup": trade_idea,
+                "Trend (21 EMA)": trend_status,
+                "Daily Sqz": "RED" if daily['in_squeeze'] else "OFF",
+                "4H Sqz": "RED" if four_h['in_squeeze'] else "OFF",
+                "Daily Hist": round(daily['hist'], 2)
+            })
+        
+        progress_bar.progress((i + 1) / len(tickers))
+
+    # --- DISPLAY RESULTS ---
+    if results:
+        df = pd.DataFrame(results)
+        
+        # Style the dataframe
+        def highlight_setups(s):
+            if "⭐" in s: return 'background-color: #155724; color: white' # Dark Green
+            if "🚀" in s or "🔥" in s: return 'background-color: #1e3a8a; color: white' # Blue
+            return ''
+
+        styled_df = df.style.applymap(highlight_setups, subset=['Setup'])
+        
+        st.subheader("Scan Results")
+        st.dataframe(styled_df, use_container_width=True)
+        
+        # Summary Stats
+        col1, col2 = st.columns(2)
+        col1.metric("Stacked Squeezes Found", len(df[df['Setup'] == "⭐ STACKED SQUEEZE"]))
+        col2.metric("Total Bullish Setups", len(df[df['Trend (21 EMA)'] == "✅ Bullish"]))
     else:
-        return stop - entry
+        st.error("No data found or scan returned zero results.")
 
-risk_per_share = calc_risk_per_share(side, entry, stop)
-
-# Validate
-if entry <= 0:
-    st.error("Entry price must be greater than 0.")
-    st.stop()
-
-if stop <= 0:
-    st.error("Stop price must be greater than 0.")
-    st.stop()
-
-if risk_dollars <= 0:
-    st.error("Max Risk ($) must be greater than 0.")
-    st.stop()
-
-if risk_per_share <= 0:
-    st.error(
-        "Stop is on the wrong side of entry for the selected direction.\n\n"
-        "For Long: stop must be below entry.\n"
-        "For Short: stop must be above entry."
-    )
-    st.stop()
-
-raw_size = risk_dollars / risk_per_share
-size = math.floor(raw_size) if round_down else raw_size
-
-total_cost = size * entry  # for shares; for short it's still notional value
-total_risk = size * risk_per_share
-
-# Target math
-profit_per_share = None
-r_multiple = None
-expected_profit = None
-
-if target and target > 0:
-    if side == "Long":
-        profit_per_share = target - entry
-    else:
-        profit_per_share = entry - target
-
-    if profit_per_share is not None and profit_per_share > 0:
-        expected_profit = profit_per_share * size
-        r_multiple = profit_per_share / risk_per_share
-
-# --- Output ---
-c1, c2, c3 = st.columns(3)
-c1.metric("Risk / Share", f"${risk_per_share:,.2f}")
-c2.metric("Position Size", f"{size:,.0f}" if round_down else f"{size:,.2f}")
-c3.metric("Total Risk", f"${total_risk:,.2f}")
-
-c4, c5 = st.columns(2)
-c4.metric("Total Cost (Notional)", f"${total_cost:,.2f}")
-c5.metric("Entry → Stop Move", f"{(risk_per_share / entry) * 100:,.2f}%")
-
-st.divider()
-
-if target and target > 0:
-    if profit_per_share is None or profit_per_share <= 0:
-        st.warning("Target is not in the profitable direction for the selected side.")
-    else:
-        cc1, cc2, cc3 = st.columns(3)
-        cc1.metric("Profit / Share", f"${profit_per_share:,.2f}")
-        cc2.metric("R Multiple", f"{r_multiple:,.2f}R")
-        cc3.metric("Profit at Target", f"${expected_profit:,.2f}")
-
-st.caption("Note: For options/futures, you can adapt size to contract multipliers and margin rules.")
-
-st.divider()
-st.subheader("Trade Quality Check")
-
-# Minimum acceptable R
-min_r_required = st.number_input(
-    "Minimum R Required",
-    value=2.0,
-    step=0.25
-)
-
-good_trade = True
-reasons = []
-
-# R multiple check
-if r_multiple is not None:
-    if r_multiple < min_r_required:
-        good_trade = False
-        reasons.append("Reward is too small vs risk.")
 else:
-    good_trade = False
-    reasons.append("No valid profit target set.")
+    st.info("Click 'Run Scanner' in the sidebar to begin.")
 
-# Position size sanity check
-if size <= 0:
-    good_trade = False
-    reasons.append("Position size invalid.")
-
-# Stop distance %
-stop_pct = (risk_per_share / entry) * 100
-if stop_pct < 0.2:
-    reasons.append("Stop may be too tight.")
-if stop_pct > 10:
-    reasons.append("Stop distance very large.")
-
-# Final decision
-if good_trade:
-    st.success("✅ Trade meets your minimum criteria.")
-else:
-    st.error("❌ Trade does NOT meet criteria.")
-
-if reasons:
-    st.write("Notes:")
-    for r in reasons:
-        st.write("-", r)
-
+# --- FOOTER ---
+st.markdown("---")
+st.caption("Data provided by Yahoo Finance. This tool is for educational purposes and does not constitute financial advice.")
