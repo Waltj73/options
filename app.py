@@ -3,9 +3,9 @@ import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
 
-st.set_page_config(page_title="Nasdaq 50 Pro Grader", layout="wide")
+st.set_page_config(page_title="Nasdaq 50 Master", layout="wide")
 
-# --- 1. THE FULL LIST (Back to 50) ---
+# --- 1. THE LIST ---
 FULL_SCAN_LIST = [
     "NVDA", "AAPL", "MSFT", "AMZN", "META", "GOOGL", "TSLA", "AVGO", "COST", "NFLX", 
     "AMD", "ADBE", "CRM", "QCOM", "TXN", "MU", "INTC", "AMAT", "LRCX", "ADI", 
@@ -16,13 +16,19 @@ FULL_SCAN_LIST = [
 
 def get_clean_data(ticker):
     try:
-        # One by one to avoid the Multi-Index bug
+        # Download data
         df = yf.download(ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
-        h4 = yf.download(ticker, period="1mo", interval="1h", progress=False, auto_adjust=True)
+        h4 = yf.download(ticker, period="60d", interval="1h", progress=False, auto_adjust=True)
         
-        if df.empty or len(df) < 30: return None
+        # FIX: Flatten Multi-Index if it exists
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        if isinstance(h4.columns, pd.MultiIndex):
+            h4.columns = h4.columns.get_level_values(0)
 
-        # TTM Squeeze Calculation
+        if df.empty or len(df) < 21: return None
+
+        # TTM Squeeze math
         sqz = df.ta.squeeze(lazy_limit=True)
         ema21 = ta.ema(df['Close'], length=21).iloc[-1]
         
@@ -40,32 +46,28 @@ def get_clean_data(ticker):
             "Daily_Sqz": bool(sqz['SQZ_ON'].iloc[-1] == 1),
             "4H_Sqz": bool(h4.ta.squeeze(lazy_limit=True)['SQZ_ON'].iloc[-1] == 1),
             "Dot_Count": dots,
-            "Fired": bool(sqz['SQZ_ON'].iloc[-2] == 1 and sqz['SQZ_ON'].iloc[-1] == 0),
-            "Hist": round(float(sqz['SQZ_INC'].iloc[-1]), 3)
+            "Fired": bool(sqz['SQZ_ON'].iloc[-2] == 1 and sqz['SQZ_ON'].iloc[-1] == 0)
         }
     except: return None
 
 # --- 2. UI ---
 st.title("⚡ Nasdaq 50 Squeeze Master")
-st.caption(f"Scanning {len(FULL_SCAN_LIST)} Momentum & Volume Leaders")
 
-if st.button("🚀 Start Full 50-Stock Scan"):
+if st.button("🚀 Start Scan"):
     results = []
-    total_scanned = 0
+    status_text = st.empty() # Real-time update slot
     bar = st.progress(0)
     
     for i, t in enumerate(FULL_SCAN_LIST):
+        status_text.text(f"Analyzing {t}...") # Shows you it's actually moving
         raw = get_clean_data(t)
         if raw:
-            total_scanned += 1
-            # Show if in Squeeze or just Fired
+            # We show everything with ANY squeeze or a recent FIRE
             if raw['Daily_Sqz'] or raw['4H_Sqz'] or raw['Fired']:
-                # GRADING LOGIC
-                if raw['Trend'] == "Bullish" and raw['Daily_Sqz'] and raw['4H_Sqz']: grade = "A+"
-                elif raw['Trend'] == "Bullish" and raw['Daily_Sqz']: grade = "A"
-                elif raw['Daily_Sqz']: grade = "C (Bearish)"
-                else: grade = "Fired"
-
+                grade = "C"
+                if raw['Trend'] == "Bullish":
+                    grade = "A+" if raw['Daily_Sqz'] and raw['4H_Sqz'] else "A"
+                
                 results.append({
                     "Grade": grade,
                     "Ticker": t,
@@ -73,13 +75,14 @@ if st.button("🚀 Start Full 50-Stock Scan"):
                     "Trend": "✅ Bull" if raw['Trend'] == "Bullish" else "❌ Bear",
                     "Dots": raw['Dot_Count'],
                     "4H Sqz": "RED" if raw['4H_Sqz'] else "OFF",
-                    "Summary": f"Coiling above 21 EMA" if raw['Trend'] == "Bullish" else "Coiling BELOW trend"
+                    "Status": "Squeezing" if raw['Daily_Sqz'] else "Fired"
                 })
         bar.progress((i+1)/len(FULL_SCAN_LIST))
 
+    status_text.empty() # Clear the progress text
+
     if results:
-        df = pd.DataFrame(results).sort_values(by="Grade")
+        df = pd.DataFrame(results).sort_values(by=["Grade", "Dots"], ascending=[True, False])
         st.table(df)
     else:
-        st.warning(f"Scan Complete. Scanned {total_scanned} stocks, but 0 are currently in a Squeeze.")
-        st.info("Market Context: When the VIX is high, Bollinger Bands stay wide. No red dots = No compression.")
+        st.warning("Scan Complete. Math is working, but 0 stocks meet the 'Squeeze' criteria right now.")
