@@ -1,10 +1,12 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import pandas_ta as ta
 
-# ---------------- CONFIG ---------------- #
-st.set_page_config(page_title="Squeeze Pro Stable", layout="wide")
+# --- 1. CONFIGURATION ---
+st.set_page_config(page_title="Nasdaq Squeeze Pro", layout="wide")
 
+# DATASETS
 MARKET_CAP_50 = [
     "NVDA","AAPL","GOOGL","MSFT","AMZN","TSM","AVGO","META","TSLA","WMT",
     "LLY","JPM","XOM","JNJ","V","ASML","COST","MA","ORCL","NFLX",
@@ -21,190 +23,125 @@ VOLUME_LEADERS_50 = [
     "PFE","XOM","CCL","AAL","ABNB","DASH","PATH","RIVN","SMCI","MSTR"
 ]
 
-# ---------------- CACHE ---------------- #
-@st.cache_data(ttl=1800)
-def get_data(ticker, period, interval):
+# --- 2. LOGIC ENGINE ---
+def get_squeeze_data(ticker):
     try:
-        df = yf.download(ticker, period=period, interval=interval, progress=False)
-        if df is None or df.empty:
+        data = yf.download(ticker, period="6mo", interval="1d", progress=False)
+        h4_data = yf.download(ticker, period="1mo", interval="1h", progress=False)
+
+        # SAFETY CHECKS
+        if data is None or h4_data is None:
             return None
-        df = df.dropna()
-        return df
-    except:
-        return None
-
-# ---------------- EMA ---------------- #
-def ema(series, length=21):
-    return series.ewm(span=length, adjust=False).mean()
-
-# ---------------- SQUEEZE (CUSTOM, NO pandas_ta) ---------------- #
-def compute_squeeze(df):
-    close = df['Close']
-    high = df['High']
-    low = df['Low']
-
-    # Bollinger Bands
-    bb_mid = close.rolling(20).mean()
-    bb_std = close.rolling(20).std()
-    bb_upper = bb_mid + 2 * bb_std
-    bb_lower = bb_mid - 2 * bb_std
-
-    # Keltner Channels
-    tr = (high - low)
-    kc_mid = close.rolling(20).mean()
-    kc_upper = kc_mid + 1.5 * tr.rolling(20).mean()
-    kc_lower = kc_mid - 1.5 * tr.rolling(20).mean()
-
-    # Squeeze ON
-    squeeze_on = (bb_lower > kc_lower) & (bb_upper < kc_upper)
-
-    # Momentum proxy
-    momentum = close - close.rolling(20).mean()
-
-    return squeeze_on, momentum
-
-# ---------------- MARKET BIAS ---------------- #
-def get_market_bias():
-    spy = get_data("SPY", "6mo", "1d")
-    if spy is None or len(spy) < 30:
-        return "Neutral"
-
-    close = spy['Close']
-    ema21 = ema(close, 21)
-
-    if ema21.isna().all():
-        return "Neutral"
-
-    return "Bullish" if close.iloc[-1] > ema21.iloc[-1] else "Bearish"
-
-# ---------------- ANALYSIS ENGINE ---------------- #
-def analyze_ticker(ticker):
-    try:
-        df = get_data(ticker, "6mo", "1d")
-        h1 = get_data(ticker, "1mo", "1h")
-
-        if df is None or h1 is None or len(df) < 50:
+        if data.empty or h4_data.empty:
+            return None
+        if len(data) < 30 or len(h4_data) < 30:
             return None
 
-        # ---- FIX INDEX ---- #
-        h1.index = pd.to_datetime(h1.index)
-        h1 = h1.tz_localize(None)
+        # INDICATORS
+        sqz = data.ta.squeeze(lazy_limit=True)
+        ema21 = ta.ema(data['Close'], length=21)
 
-        # ---- REAL 4H ---- #
-        h4 = h1.resample('4H').agg({
-            'Open': 'first',
-            'High': 'max',
-            'Low': 'min',
-            'Close': 'last',
-            'Volume': 'sum'
-        }).dropna()
-
-        if len(h4) < 20:
+        # SAFETY: ensure columns exist
+        if sqz is None or 'SQZ_ON' not in sqz.columns or 'SQZ_INC' not in sqz.columns:
+            return None
+        if ema21 is None or len(ema21.dropna()) == 0:
             return None
 
-        # ---- INDICATORS ---- #
-        sqz_on, momentum = compute_squeeze(df)
-        h4_sqz_on, _ = compute_squeeze(h4)
-
-        if len(sqz_on) < 2:
-            return None
-
-        close = df['Close']
-        ema21 = ema(close, 21)
-
-        last_price = close.iloc[-1]
-        trend = "Bullish" if last_price > ema21.iloc[-1] else "Bearish"
-
-        # ---- DOT COUNT ---- #
+        # DOT COUNT
+        sqz_series = sqz['SQZ_ON'].iloc[::-1]
         dot_count = 0
-        for val in sqz_on[::-1]:
-            if val:
+        for val in sqz_series:
+            if val == 1:
                 dot_count += 1
             else:
                 break
 
-        daily_sqz = bool(sqz_on.iloc[-1])
-        fired = bool(sqz_on.iloc[-2] and not sqz_on.iloc[-1])
+        last_d = data.iloc[-1]
+        last_sqz = sqz.iloc[-1]
 
-        mom = momentum.iloc[-1]
-        prev_mom = momentum.iloc[-2]
+        # LOWER TF SQUEEZE (1H)
+        h4_sqz_df = h4_data.ta.squeeze(lazy_limit=True)
 
-        momentum_state = "Rising" if mom > prev_mom else "Falling"
-        direction = "Bullish" if mom > 0 else "Bearish"
+        if h4_sqz_df is None or 'SQZ_ON' not in h4_sqz_df.columns:
+            return None
 
-        h4_state = bool(h4_sqz_on.iloc[-1])
-
-        # ---- SCORING ---- #
-        score = 0
-        if daily_sqz: score += 2
-        if h4_state: score += 2
-        if fired and direction == "Bullish": score += 3
-        if momentum_state == "Rising": score += 1
-        if dot_count >= 5: score += 1
-        if trend == "Bullish": score += 1
+        h4_sqz = h4_sqz_df.iloc[-1]
 
         return {
             "Ticker": ticker,
-            "Price": round(float(last_price), 2),
-            "Trend": trend,
-            "Direction": direction,
-            "Dots": dot_count,
-            "Score": score
+            "Price": round(float(last_d['Close']), 2),
+            "Trend": "Bullish" if last_d['Close'] > ema21.iloc[-1] else "Bearish",
+            "Daily_Sqz": bool(last_sqz['SQZ_ON'] == 1),
+            "Dot_Count": dot_count,
+            "4H_Sqz": bool(h4_sqz['SQZ_ON'] == 1),
+            "Fired": bool(
+                len(sqz) > 2 and
+                sqz.iloc[-2]['SQZ_ON'] == 1 and
+                last_sqz['SQZ_ON'] == 0
+            ),
+            "Hist": round(float(last_sqz['SQZ_INC']), 3)
         }
 
     except Exception as e:
-        print(f"{ticker} error: {e}")
+        st.write(f"{ticker} error: {e}")
         return None
 
-# ---------------- UI ---------------- #
-st.title("⚡ Squeeze Pro (Stable Build)")
+# --- 3. MAIN UI ---
+st.title("⚡ Nasdaq Dual-Mode Squeeze Dash")
+st.sidebar.header("Scanner Controls")
 
-st.sidebar.header("Controls")
+scan_mode = st.sidebar.radio(
+    "Select Scan Universe",
+    ["Top 50 Market Cap", "Top 50 Volume"]
+)
 
-mode = st.sidebar.radio("Universe", ["Market Cap", "Volume"])
-tickers = MARKET_CAP_50 if mode == "Market Cap" else VOLUME_LEADERS_50
+selected_list = MARKET_CAP_50 if scan_mode == "Top 50 Market Cap" else VOLUME_LEADERS_50
 
-market_bias = get_market_bias()
-
-if market_bias == "Neutral":
-    st.sidebar.warning("Market Bias: Neutral")
-else:
-    st.sidebar.markdown(
-        f"### Market Bias: {'🟢 Bullish' if market_bias == 'Bullish' else '🔴 Bearish'}"
-    )
-
-# ---------------- RUN SCAN ---------------- #
-if st.sidebar.button("Run Scan"):
-
+if st.sidebar.button("🚀 Run Active Scan"):
     results = []
-    progress = st.progress(0)
+    bar = st.progress(0)
 
-    for i, t in enumerate(tickers):
-        data = analyze_ticker(t)
+    for i, ticker in enumerate(selected_list):
+        status = get_squeeze_data(ticker)
 
-        if data:
-            if market_bias == "Bullish" and data["Direction"] == "Bearish":
-                continue
+        if status:
+            if status['Daily_Sqz'] or status['Fired']:
+                setup = "Building"
 
-            results.append(data)
+                if status['Fired'] and status['Trend'] == "Bullish":
+                    setup = "🚀 FIRE (LONG)"
+                elif status['Daily_Sqz'] and status['4H_Sqz']:
+                    setup = "⭐ STACKED"
+                elif status['Daily_Sqz']:
+                    setup = f"⏳ {status['Dot_Count']} Dots"
 
-        progress.progress((i + 1) / len(tickers))
+                results.append({
+                    "Ticker": status['Ticker'],
+                    "Price": status['Price'],
+                    "Setup": setup,
+                    "Trend": "✅" if status['Trend'] == "Bullish" else "❌",
+                    "Dots": status['Dot_Count'],
+                    "4H Sqz": "RED" if status['4H_Sqz'] else "OFF",
+                    "Momentum": status['Hist']
+                })
+
+        bar.progress((i + 1) / len(selected_list))
 
     if results:
-        df = pd.DataFrame(results).sort_values(by="Score", ascending=False)
+        df = pd.DataFrame(results).sort_values(by="Dots", ascending=False)
 
-        def style_rows(row):
-            if row["Score"] >= 6:
+        def highlight_rows(row):
+            if "⭐" in str(row.Setup):
                 return ['background-color: #064e3b; color: white'] * len(row)
-            elif row["Score"] >= 4:
+            if "🚀" in str(row.Setup):
                 return ['background-color: #1e3a8a; color: white'] * len(row)
             return [''] * len(row)
 
-        st.subheader("Top Setups")
-        st.dataframe(df.style.apply(style_rows, axis=1), use_container_width=True)
+        st.subheader(f"Results: {scan_mode}")
+        st.dataframe(df.style.apply(highlight_rows, axis=1), use_container_width=True)
 
     else:
-        st.warning("No setups found.")
+        st.info(f"No active squeezes in {scan_mode} right now.")
 
 else:
-    st.info("Click Run Scan")
+    st.info("Pick a mode and click Run Active Scan")
