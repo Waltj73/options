@@ -3,33 +3,40 @@ import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
 
-# --- 1. CONFIGURATION & UI ---
-st.set_page_config(page_title="Nasdaq 50 Squeeze Pro", layout="wide")
+# --- 1. CONFIGURATION ---
+st.set_page_config(page_title="Nasdaq Squeeze Pro", layout="wide")
 
-# The "Big 50" - Hand-picked for liquidity and volatility
-NASDAQ_50 = [
-    "AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "GOOG", "TSLA", "AVGO", "PEP", 
-    "ASML", "COST", "ADBE", "AZN", "LIN", "AMD", "TXN", "INTC", "TMUS", "AMAT", 
-    "QCOM", "AMGN", "ISRG", "HON", "VRTX", "BKNG", "SBUX", "PANW", "MDLZ", "INTU", 
-    "REGN", "GILD", "ADI", "LRCX", "MU", "MELI", "SNPS", "CDNS", "KLAC", "CSX", 
-    "MAR", "PYPL", "ORLY", "MNST", "ASML", "ADSK", "ANSS", "CPRT", "KDP", "MCHP"
+# DATASETS (Updated for 2026 Market Leaders)
+MARKET_CAP_50 = [
+    "NVDA", "AAPL", "GOOGL", "MSFT", "AMZN", "TSM", "AVGO", "META", "TSLA", "WMT",
+    "LLY", "JPM", "XOM", "JNJ", "V", "ASML", "COST", "MA", "ORCL", "NFLX",
+    "MU", "CVX", "ABBV", "AMD", "BAC", "PLTR", "CAT", "PG", "KO", "HD",
+    "AZN", "CSCO", "MRK", "NVS", "INTC", "UNH", "WFC", "PM", "GEV", "LIN",
+    "IBM", "RY", "TMUS", "MCD", "PEP", "VZ", "ADBE", "QCOM", "TXN", "AMGN"
 ]
 
-# --- 2. THE LOGIC ENGINE ---
+VOLUME_LEADERS_50 = [
+    "NVDA", "TSLA", "PLTR", "AMD", "INTC", "MARA", "SOFI", "RIOT", "COIN", "AAPL",
+    "AMZN", "MSFT", "GOOGL", "META", "BABA", "NIO", "LCID", "F", "BAC", "T",
+    "MU", "SQ", "SHOP", "RKLB", "HOOD", "AFRM", "UPST", "DKNG", "OPEN", "PLUG",
+    "U", "AI", "CLSK", "WULF", "GME", "AMC", "PYPL", "SNAP", "NKE", "VALE",
+    "PFE", "XOM", "CCL", "AAL", "ABNB", "DASH", "PATH", "RIVN", "SMCI", "MSTR"
+]
+
+# --- 2. LOGIC ENGINE ---
 def get_squeeze_data(ticker):
     try:
-        # Fetch 6 months of data (Optimal for 21 EMA & Squeeze calculation speed)
+        # 6-month lookback is ideal for 21 EMA and Squeeze stability
         data = yf.download(ticker, period="6mo", interval="1d", progress=False)
-        h4_data = yf.download(ticker, period="1mo", interval="1h", progress=False) # 4h equivalent
+        h4_data = yf.download(ticker, period="1mo", interval="1h", progress=False) 
         
         if data.empty or h4_data.empty: return None
 
-        # --- Daily Analysis ---
+        # Daily Indicators
         sqz = data.ta.squeeze(lazy_limit=True)
         ema21 = ta.ema(data['Close'], length=21)
         
-        # Calculate Dot Count (How many consecutive red dots?)
-        # We reverse the series and count until the first '0' (no squeeze)
+        # Calculate Consecutive Red Dots
         sqz_series = sqz['SQZ_ON'].iloc[::-1]
         dot_count = 0
         for val in sqz_series:
@@ -39,8 +46,7 @@ def get_squeeze_data(ticker):
         last_d = data.iloc[-1]
         last_sqz = sqz.iloc[-1]
         
-        # --- 4-Hour Analysis ---
-        # Note: yfinance 1h data used to simulate 4h (last 4 bars)
+        # 4-Hour Squeeze (Simulated via 1h data)
         h4_sqz = h4_data.ta.squeeze(lazy_limit=True).iloc[-1]
 
         return {
@@ -56,22 +62,23 @@ def get_squeeze_data(ticker):
     except:
         return None
 
-# --- 3. MAIN INTERFACE ---
-st.title("⚡ Nasdaq 50 Squeeze Dash")
-st.caption("Scanning the top 50 Nasdaq names for compression setups and trend alignment.")
+# --- 3. MAIN UI ---
+st.title("⚡ Nasdaq Dual-Mode Squeeze Dash")
+st.sidebar.header("Scanner Controls")
 
-if st.button("🚀 Run Nasdaq Scan"):
+# THE TOGGLE
+scan_mode = st.sidebar.radio("Select Scan Universe", ["Top 50 Market Cap", "Top 50 Volume"])
+selected_list = MARKET_CAP_50 if scan_mode == "Top 50 Market Cap" else VOLUME_LEADERS_50
+
+if st.sidebar.button("🚀 Run Active Scan"):
     results = []
     bar = st.progress(0)
     
-    for i, ticker in enumerate(NASDAQ_50):
+    for i, ticker in enumerate(selected_list):
         status = get_squeeze_data(ticker)
         if status:
-            # Filtering for "Actionable" logic
-            # We want: Current Squeezes OR Just Fired
+            # Show if Squeezing or Just Fired
             if status['Daily_Sqz'] or status['Fired']:
-                
-                # Determine Setup Type
                 setup = "Building"
                 if status['Fired'] and status['Trend'] == "Bullish": setup = "🚀 FIRE (LONG)"
                 elif status['Daily_Sqz'] and status['4H_Sqz']: setup = "⭐ STACKED"
@@ -83,27 +90,22 @@ if st.button("🚀 Run Nasdaq Scan"):
                     "Setup": setup,
                     "Trend": "✅" if status['Trend'] == "Bullish" else "❌",
                     "Dots": status['Dot_Count'],
-                    "4H": "RED" if status['4H_Sqz'] else "OFF",
-                    "Energy": status['Hist']
+                    "4H Sqz": "RED" if status['4H_Sqz'] else "OFF",
+                    "Momentum": status['Hist']
                 })
-        bar.progress((i + 1) / len(NASDAQ_50))
+        bar.progress((i + 1) / len(selected_list))
 
     if results:
         df = pd.DataFrame(results).sort_values(by="Dots", ascending=False)
         
-        # UI Styling
         def highlight_rows(row):
-            if "⭐" in str(row.Setup): return ['background-color: #1b4332'] * len(row)
-            if "🚀" in str(row.Setup): return ['background-color: #0d47a1'] * len(row)
+            if "⭐" in str(row.Setup): return ['background-color: #064e3b; color: white'] * len(row)
+            if "🚀" in str(row.Setup): return ['background-color: #1e3a8a; color: white'] * len(row)
             return [''] * len(row)
 
-        st.subheader("Active Setups Found")
+        st.subheader(f"Results: {scan_mode}")
         st.dataframe(df.style.apply(highlight_rows, axis=1), use_container_width=True)
-        
-        # Insight Column
-        st.info("**Strategy Tip:** Focus on tickers with 5+ Dots that are also Bullish (✅). These are high-probability 'Coiled Springs'.")
     else:
-        st.success("No active squeezes in the Nasdaq 50 right now. Markets might be in an extended 'Expansion' phase.")
-
+        st.info(f"No active squeezes in {scan_mode} right now.")
 else:
-    st.info("Click the button above to analyze the Nasdaq 50.")
+    st.info(f"Pick a mode and click **Run Active Scan**.")
