@@ -1,91 +1,60 @@
-import streamlit as st
 import yfinance as yf
 import pandas as pd
-import pandas_ta as ta
+import numpy as np
 
-st.set_page_config(page_title="Pro-Squeeze Grader", layout="wide")
-
-# --- 1. DATASETS ---
-MARKET_CAP_50 = ["NVDA", "AAPL", "MSFT", "AMZN", "META", "GOOGL", "TSLA", "AVGO", "COST", "NFLX", "AMD", "ADBE", "CRM", "QCOM", "TXN"]
-VOLUME_LEADERS_50 = ["PLTR", "SOFI", "MARA", "RIOT", "COIN", "HOOD", "AFRM", "UPST", "RKLB", "NIO", "TSLA", "NVDA", "AMD", "INTC", "GME"]
-
-# --- 2. THE GRADING ENGINE ---
-def grade_setup(data):
-    ticker = data['Ticker']
-    is_bullish = data['Trend'] == "Bullish"
-    d_sqz = data['Daily_Sqz']
-    h4_sqz = data['4H_Sqz']
-    dots = data['Dot_Count']
-    fired = data['Fired']
-
-    if is_bullish and d_sqz and h4_sqz:
-        return "A+", f"The Holy Grail. {ticker} is trending higher and compressed on two timeframes. Explosive potential."
-    elif is_bullish and d_sqz and dots >= 5:
-        return "A", f"Strong Bullish Coil. {ticker} has {dots} days of energy built up above the trend line."
-    elif is_bullish and d_sqz:
-        return "B", f"Early Bullish Squeeze. Trend is right, but the squeeze is still in the early 'coiling' phase."
-    elif is_bullish and fired:
-        return "A (Fired)", f"Momentum Release. The squeeze just fired long. Watch for follow-through."
-    elif not is_bullish and d_sqz:
-        return "C", f"Bearish Squeeze. {ticker} is coiling but remains below the 21 EMA. High risk of a breakdown."
-    return "D", "No significant squeeze activity or trend alignment."
-
-def get_data(ticker):
-    try:
-        d = yf.download(ticker, period="6mo", interval="1d", progress=False)
-        h4 = yf.download(ticker, period="1mo", interval="1h", progress=False)
-        if d.empty or h4.empty: return None
-        
-        sqz = d.ta.squeeze(lazy_limit=True)
-        ema21 = ta.ema(d['Close'], length=21).iloc[-1]
-        
-        # Dot counting logic
-        sqz_series = sqz['SQZ_ON'].iloc[::-1]
-        dots = 0
-        for val in sqz_series:
-            if val == 1: dots += 1
-            else: break
-
-        return {
-            "Ticker": ticker,
-            "Price": round(float(d['Close'].iloc[-1]), 2),
-            "Trend": "Bullish" if d['Close'].iloc[-1] > ema21 else "Bearish",
-            "Daily_Sqz": bool(sqz['SQZ_ON'].iloc[-1] == 1),
-            "4H_Sqz": bool(h4.ta.squeeze(lazy_limit=True)['SQZ_ON'].iloc[-1] == 1),
-            "Dot_Count": dots,
-            "Fired": bool(sqz['SQZ_ON'].iloc[-2] == 1 and sqz['SQZ_ON'].iloc[-1] == 0),
-            "Hist": round(float(sqz['SQZ_INC'].iloc[-1]), 3)
-        }
-    except: return None
-
-# --- 3. UI ---
-st.title("🎓 Pro-Squeeze Setup Grader")
-scan_mode = st.sidebar.radio("Universe", ["Market Cap Titans", "Volume Movers"])
-tickers = MARKET_CAP_50 if "Titans" in scan_mode else VOLUME_LEADERS_50
-
-if st.sidebar.button("🔍 Scan & Grade"):
+def professional_scanner(tickers):
     results = []
-    bar = st.progress(0)
-    for i, t in enumerate(tickers):
-        raw = get_data(t)
-        if raw:
-            grade, summary = grade_setup(raw)
-            if grade != "D": # Loosened: Shows everything except "No Setup"
+    
+    for ticker in tickers:
+        try:
+            # Download 6 months of data for moving average stability
+            df = yf.download(ticker, period="6mo", interval="1d", progress=False)
+            if len(df) < 50: continue
+
+            # 1. Technical Indicators
+            df['8EMA'] = df['Close'].ewm(span=8, adjust=False).mean()
+            df['21EMA'] = df['Close'].ewm(span=21, adjust=False).mean()
+            df['50SMA'] = df['Close'].rolling(window=50).mean()
+            df['Vol_Avg'] = df['Volume'].rolling(window=20).mean()
+            
+            # 2. Logic Definitions
+            last_close = df['Close'].iloc[-1]
+            prev_close = df['Close'].iloc[-2]
+            ema21 = df['21EMA'].iloc[-1]
+            sma50 = df['50SMA'].iloc[-1]
+            curr_vol = df['Volume'].iloc[-1]
+            avg_vol = df['Vol_Avg'].iloc[-1]
+
+            # 3. The Setup Criteria (The "Desk" Filter)
+            is_uptrend = last_close > sma50  # Long term trend is up
+            is_near_ema21 = abs(last_close - ema21) / ema21 < 0.02 # Within 2% of 21EMA
+            low_volume = curr_vol < avg_vol # Institutional "dry up"
+            
+            # Reversal Candle (Hammer or Inside Day)
+            is_hammer = (df['High'].iloc[-1] - df['Low'].iloc[-1]) > 3 * abs(df['Open'].iloc[-1] - last_close)
+            is_inside_day = (df['High'].iloc[-1] < df['High'].iloc[-2]) and (df['Low'].iloc[-1] > df['Low'].iloc[-2])
+
+            if is_uptrend and is_near_ema21 and (is_hammer or is_inside_day):
+                # Scoring System (0-10)
+                score = 5 # Base score for meeting criteria
+                if low_volume: score += 2
+                if last_close > df['8EMA'].iloc[-1]: score += 2
+                if is_inside_day and is_hammer: score += 1
+                
                 results.append({
-                    "Grade": grade, "Ticker": t, "Price": raw['Price'], 
-                    "Trend": "✅" if raw['Trend'] == "Bullish" else "❌",
-                    "Sqz (D/4H)": f"{raw['Daily_Sqz']}/{raw['4H_Sqz']}",
-                    "Summary": summary
+                    "Ticker": ticker,
+                    "Price": round(last_close, 2),
+                    "Score": score,
+                    "Setup": "Hammer" if is_hammer else "Inside Day",
+                    "StopLoss": round(df['Low'].iloc[-1] * 0.99, 2),
+                    "Target1": round(last_close + (last_close - (df['Low'].iloc[-1] * 0.99)), 2)
                 })
-        bar.progress((i+1)/len(tickers))
+        except Exception as e:
+            continue
+            
+    return pd.DataFrame(results).sort_values(by="Score", ascending=False)
 
-    if results:
-        df = pd.DataFrame(results).sort_values(by="Grade")
-        def color_grade(val):
-            color = '#1e3a8a' if 'A' in val else '#374151'
-            if val == 'A+': color = '#064e3b'
-            return f'background-color: {color}; color: white'
-
-        st.table(df.style.applymap(color_grade, subset=['Grade']))
-    else:
-        st.info("No Squeezes found in this list.")
+# Example Desk Watchlist
+watchlist = ["AAPL", "MSFT", "NVDA", "TSLA", "AMD", "GOOGL", "AMZN", "META"]
+scan_report = professional_scanner(watchlist)
+print(scan_report)
