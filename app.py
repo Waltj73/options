@@ -1,83 +1,119 @@
 import yfinance as yf
 import pandas as pd
+import numpy as np
 import warnings
 
-# Suppress annoying background warnings
+# Clean console output
 warnings.filterwarnings('ignore')
 
-def professional_scanner(watchlist):
+def get_master_desk_report(watchlist):
+    """
+    MASTER INSTITUTIONAL RE-ENTRY SYSTEM
+    Core Logic: Price > 50SMA > 200SMA | Pullback to 21EMA | Volume Dry-up
+    """
     results = []
-    print(f"--- ACCESSING Y-FINANCE TERMINAL | SCANNING {len(watchlist)} TICKERS ---")
+    
+    print(f"--- INITIALIZING MASTER SCANNER | {len(watchlist)} ASSETS ---")
 
     for ticker in watchlist:
         try:
-            # Download 1 year of data for SMA stability
+            # Download 1 year of daily data
             df = yf.download(ticker, period="1y", interval="1d", progress=False)
             
-            if df.empty:
+            if df.empty or len(df) < 200:
                 continue
 
-            # --- CRITICAL REPAIR BLOCK ---
-            # Recent yfinance updates return Multi-Index columns. This flattens them.
+            # --- DATA REPAIR & FLATTENING ---
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
-            
-            # Ensure the index is a DatetimeIndex
             df.index = pd.to_datetime(df.index)
-            # -----------------------------
 
-            # Technical Indicators
+            # --- TECHNICAL CORE ---
+            # Exponential Averages (Fast Momentum)
             df['8EMA'] = df['Close'].ewm(span=8, adjust=False).mean()
             df['21EMA'] = df['Close'].ewm(span=21, adjust=False).mean()
+            
+            # Simple Moving Averages (Institutional Baseline)
             df['50SMA'] = df['Close'].rolling(window=50).mean()
             df['200SMA'] = df['Close'].rolling(window=200).mean()
+            
+            # Volume Analysis
             df['Vol_Avg'] = df['Volume'].rolling(window=20).mean()
 
-            # Current Values
-            price = float(df['Close'].iloc[-1])
-            ema21 = float(df['21EMA'].iloc[-1])
-            sma50 = float(df['50SMA'].iloc[-1])
-            sma200 = float(df['200SMA'].iloc[-1])
-            curr_vol = float(df['Volume'].iloc[-1])
-            avg_vol = float(df['Vol_Avg'].iloc[-1])
-
-            # Logic Check
-            is_uptrend = price > sma50 and sma50 > sma200
-            near_ema21 = abs(price - ema21) / ema21 < 0.04 # 4% range
+            # --- DATA EXTRACTION (CURRENT vs PREVIOUS) ---
+            curr = df.iloc[-1]
+            prev = df.iloc[-2]
             
-            # If the stock is in a healthy uptrend and near the 21EMA support...
-            if is_uptrend and near_ema21:
-                score = 7 # Starting score for quality uptrend
-                if curr_vol < avg_vol: score += 2 # Institutional dry-up
-                if price > df['8EMA'].iloc[-1]: score += 1 # Gaining momentum
+            price = float(curr['Close'])
+            ema21 = float(curr['21EMA'])
+            sma50 = float(curr['50SMA'])
+            sma200 = float(curr['200SMA'])
+            curr_vol = float(curr['Volume'])
+            avg_vol = float(curr['Vol_Avg'])
+
+            # --- PROFESSIONAL LOGIC GATES ---
+            # 1. Structural Integrity: Stock must be in a verified Stage 2 Uptrend
+            is_uptrend = price > sma50 and sma50 > sma200
+            
+            # 2. Value Zone: Price is pulling back to the 21EMA 'Safety Net'
+            # We look for price within 3% of the 21EMA
+            near_21ema = abs(price - ema21) / ema21 < 0.03
+            
+            # 3. Strat Trigger: Checking for an "Inside Day" (Scenario 1)
+            is_inside_day = (curr['High'] < prev['High']) and (curr['Low'] > prev['Low'])
+            
+            # 4. Volume Exhaustion: Sellers are getting tired
+            low_vol = curr_vol < (avg_vol * 1.05)
+
+            # --- THE SCORING ENGINE ---
+            if is_uptrend and near_21ema:
+                score = 5 # Baseline for Trend + Value
                 
+                if low_vol: score += 2        # Evidence of institutional holding
+                if is_inside_day: score += 2  # The Strat 'Scenario 1' setup
+                if price > curr['8EMA']: score += 1 # Recapturing short-term momentum
+                
+                # Risk/Reward Calculation
+                stop = round(ema21 * 0.97, 2) # 3% cushion below the EMA floor
+                risk = price - stop
+                target = round(price + (risk * 2), 2) # 2:1 Reward to Risk ratio
+
                 results.append({
                     "TICKER": ticker,
-                    "PRICE": f"${price:.2f}",
-                    "SCORE": f"{score}/10",
-                    "RATING": "A+" if score >= 9 else "B",
-                    "STOP": f"${(ema21 * 0.97):.2f}",
-                    "VOL": "Low/Dry" if curr_vol < avg_vol else "Elevated"
+                    "PRICE": round(price, 2),
+                    "SCORE": score,
+                    "RATING": "A+" if score >= 9 else "B" if score >= 7 else "C",
+                    "SETUP": "Inside Day" if is_inside_day else "Pullback",
+                    "STOP": stop,
+                    "TARGET_2R": target,
+                    "VOL_STATUS": "Dry" if low_vol else "High"
                 })
 
-        except Exception as e:
-            # Silently skip errors to keep the terminal clean
+        except Exception:
             continue
 
-    return pd.DataFrame(results)
+    if not results:
+        return pd.DataFrame()
 
-# 1. RUN THE SCAN
-# Using a broader list to guarantee we find setups in today's market
-watchlist = ["AAPL", "MSFT", "NVDA", "TSLA", "AMD", "GOOGL", "AMZN", "META", "AVGO", "NFLX", "COST", "SMCI"]
-report = professional_scanner(watchlist)
+    return pd.DataFrame(results).sort_values(by="SCORE", ascending=False)
 
-# 2. OUTPUT TO CONSOLE
+# --- WORKSTATION EXECUTION ---
+# This list contains "Institutional Leaders" - stocks big money loves to defend at the 21EMA.
+master_watchlist = [
+    "AAPL", "MSFT", "NVDA", "TSLA", "AMD", "GOOGL", "AMZN", "META", 
+    "NFLX", "AVGO", "ORCL", "COST", "SMCI", "UBER", "PANW", "QCOM", "PLTR"
+]
+
+report = get_master_desk_report(master_watchlist)
+
 if report.empty:
-    print("\n[DESK ALERT] No qualified setups found. Market may be overextended.")
-    print("Action: Stay in Cash. Do not chase.")
+    print("\n[REPORT] Market Condition: Overextended or Bearish. No Low-Risk entries found.")
+    print("Action: Preserve Capital. Wait for the pullback to the 21-day EMA.")
 else:
-    print("\n--- OFFICIAL TRADING DESK REPORT ---")
-    # Sort by score manually since Score is now a string for display
+    print("\n--- MASTER INSTITUTIONAL RE-ENTRY REPORT ---")
     print(report.to_string(index=False))
-
-print("\n--- SCAN COMPLETE ---")
+    
+    # Position Sizing Logic for the Top Pick
+    top = report.iloc[0]
+    print(f"\n--- EXECUTION GUIDE (TOP PICK: {top['TICKER']}) ---")
+    print(f"Risking $500 on this trade? Buy {int(500 / (top['PRICE'] - top['STOP']))} shares.")
