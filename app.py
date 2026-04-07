@@ -8,10 +8,13 @@ st.set_page_config(page_title="Universal Strat Sniper", layout="wide")
 # --- ORGANIZED SECTOR LIST ---
 SECTORS = {
     "Market Pillars & Metals": ["SPY", "QQQ", "GLD", "SLV", "PAAS"],
-    "Technology": ["NVDA", "AAPL", "MSFT", "AMD", "AVGO", "ORCL", "CRM", "QCOM", "MU", "PLTR"],
-    "Financials": ["JPM", "V", "MA", "BAC", "GS", "MS", "AXP", "PYPL", "COIN", "HOOD"],
-    "Consumer/Growth": ["AMZN", "TSLA", "META", "GOOGL", "NFLX", "SBUX", "ABNB", "SHOP", "DKNG", "MARA"],
-    "Energy/Industrials": ["XOM", "CVX", "SLB", "GE", "CAT", "BA", "LMT", "RTX", "UNP", "DE"]
+    "Technology": ["MSFT", "AAPL", "NVDA", "AVGO", "ORCL", "ADBE", "CRM", "AMD", "QCOM", "INTU"],
+    "Financials": ["JPM", "V", "MA", "BAC", "WFC", "GS", "MS", "AXP", "BLK", "SPGI"],
+    "Healthcare": ["LLY", "UNH", "JNJ", "ABBV", "MRK", "TMO", "AMGN", "ISRG", "PFE", "GILD"],
+    "Consumer Disc": ["AMZN", "TSLA", "HD", "MCD", "NKE", "BKNG", "LOW", "SBUX", "TJX", "CMG"],
+    "Energy": ["XOM", "CVX", "COP", "SLB", "EOG", "MPC", "VLO", "HES", "HAL", "PSX"],
+    "Industrials": ["GE", "CAT", "RTX", "HON", "UNP", "LMT", "UPS", "BA", "DE", "GEHC"],
+    "Communication": ["META", "GOOGL", "NFLX", "DIS", "TMUS", "VZ", "T", "CHTR", "CMCSA", "EA"]
 }
 
 def flatten_df(df):
