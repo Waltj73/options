@@ -3,15 +3,20 @@ import yfinance as yf
 import pandas as pd
 import time
 
-st.set_page_config(page_title="Strat Trap Sniper v3", layout="wide")
+st.set_page_config(page_title="NDX-100 Trap Sniper", layout="wide")
 
-# --- THE NASDAQ-100 LIST ---
+# --- OFFICIAL NDX-100 TICKER LIST (Updated April 2026) ---
 NDX_100 = [
-    "NVDA", "AAPL", "MSFT", "AMZN", "META", "GOOGL", "TSLA", "AVGO", "COST", "NFLX", 
-    "AMD", "ADBE", "CRM", "QCOM", "TXN", "MU", "INTC", "AMAT", "LRCX", "ADI", 
-    "PANW", "SNPS", "CDNS", "KLAC", "MAR", "PYPL", "ORLY", "MNST", "ADSK", "ANSS", 
-    "MARA", "PLTR", "SOFI", "RIOT", "COIN", "HOOD", "AFRM", "UPST", "RKLB", "NIO",
-    "SQ", "SHOP", "RBLX", "TSM", "DKNG", "PATH", "U", "AI", "GME", "AMC"
+    "ADBE", "AMD", "ABNB", "ALNY", "GOOGL", "GOOG", "AMZN", "AEP", "AMGN", "ADI",
+    "AAPL", "AMAT", "APP", "ARM", "ASML", "TEAM", "ADSK", "ADP", "AXON", "BKR",
+    "BKNG", "AVGO", "CDNS", "CHTR", "CTAS", "CSCO", "CCEP", "CTSH", "CMCSA", "CEG",
+    "CPRT", "CSGP", "COST", "CRWD", "CSX", "DDOG", "DXCM", "FANG", "DASH", "EA",
+    "EXC", "FAST", "FER", "FTNT", "GEHC", "GILD", "HON", "IDXX", "INSM", "INTC",
+    "INTU", "ISRG", "KDP", "KLAC", "KHC", "LRCX", "LIN", "MAR", "MRVL", "MELI",
+    "META", "MCHP", "MU", "MSFT", "MDLZ", "MPWR", "MNST", "NFLX", "NVDA", "NXPI",
+    "ORLY", "ODFL", "PCAR", "PLTR", "PANW", "PAYX", "PYPL", "PDD", "PEP", "QCOM",
+    "REGN", "ROP", "ROST", "STX", "SHOP", "SBUX", "MSTR", "SNPS", "TMUS", "TTWO",
+    "TSLA", "TXN", "TRI", "VRSK", "VRTX", "WMT", "WDC", "WDAY", "WBD", "XEL"
 ]
 
 def flatten_df(df):
@@ -21,7 +26,7 @@ def flatten_df(df):
 
 def scan_trap(ticker):
     try:
-        # Fetching Monthly, Weekly, Daily
+        # Standardize data fetching
         m = flatten_df(yf.download(ticker, period="6mo", interval="1mo", progress=False, auto_adjust=True))
         w = flatten_df(yf.download(ticker, period="1mo", interval="1wk", progress=False, auto_adjust=True))
         d = flatten_df(yf.download(ticker, period="1mo", interval="1d", progress=False, auto_adjust=True))
@@ -33,23 +38,21 @@ def scan_trap(ticker):
         m_prev_low = float(m['Low'].iloc[-2])
         m_prev_high = float(m['High'].iloc[-2])
         
-        # 1. Monthly State (Did it go 2-Down?)
+        # Monthly State
         m_curr_low = float(m['Low'].iloc[-1])
         is_m_2d = m_curr_low < m_prev_low
         
-        # 2. Continuity Directions
+        # Continuity Check
         m_dir = "UP" if curr_price > m_open else "DOWN"
         w_dir = "UP" if curr_price > w['Open'].iloc[-1] else "DOWN"
         d_dir = "UP" if curr_price > d['Open'].iloc[-1] else "DOWN"
 
-        # 3. FTC Check (The Visual Signal)
+        # FTC & Trap Logic
         is_ftc_up = (m_dir == "UP" and w_dir == "UP" and d_dir == "UP")
         ftc_signal = "✅" if is_ftc_up else "❌"
-
-        # 4. Trap Logic: Failed 2-Down
         is_trap = is_m_2d and w_dir == "UP" and d_dir == "UP"
 
-        # 5. Room to Run (%)
+        # Room to Run
         distance_to_target = m_prev_high - curr_price
         pct_to_target = (distance_to_target / curr_price) * 100
 
@@ -71,36 +74,33 @@ def scan_trap(ticker):
     except: return None
 
 # --- UI ---
-st.title("🎯 Strat Trap Sniper v3")
-st.write("Targeting Monthly 'Failed 2-Downs' with Full Timeframe Continuity (FTC) Checkmarks.")
+st.title("🎯 Nasdaq-100 Trap Sniper")
+st.write(f"Searching {len(NDX_100)} names for Monthly Failed 2-Downs.")
 
-if st.button("🚀 Run Full Advanced Scan"):
+if st.button("🚀 Start Full 100-Stock Scan"):
     results = []
     bar = st.progress(0)
     status = st.empty()
     
     for i, t in enumerate(NDX_100):
-        status.text(f"Analyzing {t}...")
+        status.text(f"Scanning {t}...")
         res = scan_trap(t)
         if res: results.append(res)
+        # Small sleep to keep the API connection stable
+        if i % 15 == 0: time.sleep(0.1)
         bar.progress((i+1)/len(NDX_100))
     
     status.empty()
     
     if results:
         df = pd.DataFrame(results)
+        aplus = df[(df['FTC'] == "✅") & (df['Setup'] == "🔥 FAILED 2-DOWN")]
         
-        # Logic: Filter for "A+" setups (FTC is UP AND it's a Failed 2-Down)
-        aplus_setups = df[(df['FTC'] == "✅") & (df['Setup'] == "🔥 FAILED 2-DOWN")].sort_values(by="Room to Run (%)", ascending=False)
-        
-        st.write("### 💎 A+ Setups (FTC ✅ + Failed 2D Monthly 🔥)")
-        if not aplus_setups.empty:
-            st.table(aplus_setups)
+        st.write("### 💎 A+ Setup List (FTC UP + Monthly Failure)")
+        if not aplus.empty:
+            st.table(aplus.sort_values(by="Room to Run (%)", ascending=False))
         else:
-            st.info("No A+ setups found where FTC is currently green on a Failed 2-Down Monthly.")
+            st.info("No current A+ setups. Check back at the next 1-hour candle close.")
             
-        st.write("### 📊 Market Context (All Scanned Tickers)")
-        # Make the full list searchable
+        st.write("### 📊 Market-Wide Scan Data")
         st.dataframe(df.sort_values(by="FTC", ascending=False))
-    else:
-        st.error("No data retrieved. Verify your internet connection and ticker list.")
