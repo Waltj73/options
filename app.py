@@ -3,9 +3,9 @@ import yfinance as yf
 import pandas as pd
 import time
 
-st.set_page_config(page_title="Strat Sniper v6", layout="wide")
+st.set_page_config(page_title="Strat Sniper PRO", layout="wide")
 
-# --- FULL MARKET SECTOR LIST ---
+# --- SECTORS ---
 SECTORS = {
     "Market Pillars & Metals": ["SPY", "QQQ", "GLD", "SLV", "PAAS"],
     "Technology": ["NVDA", "AAPL", "MSFT", "AMD", "AVGO", "ORCL", "CRM", "QCOM", "MU", "PLTR"],
@@ -17,94 +17,147 @@ SECTORS = {
     "Healthcare": ["LLY", "UNH", "JNJ", "ABBV", "MRK", "TMO", "AMGN", "ISRG", "PFE", "GILD"]
 }
 
+# --- HELPERS ---
 def flatten_df(df):
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     return df
 
-def get_grade(m_dir, w_dir, d_dir, is_m_2d):
-    # A+ is its own distinct class
-    if m_dir == "UP" and w_dir == "UP" and d_dir == "UP" and is_m_2d:
-        return "A+", "🔥 SNIPER: Failed 2D Monthly + FTC Up"
-    if m_dir == "UP" and w_dir == "UP" and d_dir == "UP":
-        return "A", "✅ TREND: Full Continuity Up"
-    if w_dir == "UP" and d_dir == "UP" and m_dir == "DOWN":
-        return "B", "⚠️ HOOK: Monthly Trap In-Progress"
-    if m_dir == "DOWN" and w_dir == "DOWN" and d_dir == "DOWN":
-        return "D", "🩸 BEAR: Avoid Longs"
-    return "C", "🔄 BATTLE: Mixed Continuity"
+def strat_type(df):
+    if len(df) < 2:
+        return "NA"
+    curr = df.iloc[-1]
+    prev = df.iloc[-2]
 
+    if curr["High"] < prev["High"] and curr["Low"] > prev["Low"]:
+        return "1"
+    elif curr["High"] > prev["High"] and curr["Low"] >= prev["Low"]:
+        return "2U"
+    elif curr["Low"] < prev["Low"] and curr["High"] <= prev["High"]:
+        return "2D"
+    elif curr["High"] > prev["High"] and curr["Low"] < prev["Low"]:
+        return "3"
+    return "?"
+
+def failed_2d(df):
+    if len(df) < 2:
+        return False
+    curr = df.iloc[-1]
+    prev = df.iloc[-2]
+
+    took_low = curr["Low"] < prev["Low"]
+    reclaim = curr["Close"] > prev["Low"] or curr["Close"] > curr["Open"]
+
+    return took_low and reclaim
+
+def daily_trigger(df):
+    if len(df) < 3:
+        return False
+    
+    curr = df.iloc[-1]
+    prev = df.iloc[-2]
+
+    # Inside bar break
+    if strat_type(df.iloc[:-1]) == "1" and curr["High"] > prev["High"]:
+        return True
+
+    # Strong continuation
+    if curr["Close"] > prev["High"]:
+        return True
+
+    return False
+
+def get_grade(m_type, w_type, d_type, m_failed_2d, trigger):
+    if m_failed_2d and w_type == "2U" and trigger:
+        return "A+", "🔥 SNIPER: Failed 2D + Trigger"
+
+    if m_type in ["2U", "1"] and w_type == "2U" and d_type == "2U":
+        return "A", "✅ TREND CONTINUATION"
+
+    if m_type == "2D" and w_type == "2U":
+        return "B", "⚠️ POSSIBLE REVERSAL"
+
+    if m_type == "2D" and w_type == "2D":
+        return "D", "🩸 FULL BEAR"
+
+    return "C", "🔄 MIXED"
+
+# --- SCAN FUNCTION ---
 def scan_strat(ticker, sector):
     try:
-        m = flatten_df(yf.download(ticker, period="6mo", interval="1mo", progress=False, auto_adjust=True))
-        w = flatten_df(yf.download(ticker, period="1mo", interval="1wk", progress=False, auto_adjust=True))
-        d = flatten_df(yf.download(ticker, period="1mo", interval="1d", progress=False, auto_adjust=True))
-        
-        if m.empty or w.empty or d.empty: return None
+        m = flatten_df(yf.download(ticker, period="6mo", interval="1mo", progress=False))
+        w = flatten_df(yf.download(ticker, period="2mo", interval="1wk", progress=False))
+        d = flatten_df(yf.download(ticker, period="1mo", interval="1d", progress=False))
 
-        curr_price = float(d['Close'].iloc[-1])
-        m_open = float(m['Open'].iloc[-1])
-        m_prev_low = float(m['Low'].iloc[-2])
-        m_prev_high = float(m['High'].iloc[-2])
-        
-        is_m_2d = float(m['Low'].iloc[-1]) < m_prev_low
-        m_dir = "UP" if curr_price > m_open else "DOWN"
-        w_dir = "UP" if curr_price > w['Open'].iloc[-1] else "DOWN"
-        d_dir = "UP" if curr_price > d['Open'].iloc[-1] else "DOWN"
+        if m.empty or w.empty or d.empty:
+            return None
 
-        grade, summary = get_grade(m_dir, w_dir, d_dir, is_m_2d)
-        room = ((m_prev_high - curr_price) / curr_price) * 100
+        m_type = strat_type(m)
+        w_type = strat_type(w)
+        d_type = strat_type(d)
+
+        m_failed = failed_2d(m)
+        trigger = daily_trigger(d)
+
+        price = d["Close"].iloc[-1]
+        prev_high = m["High"].iloc[-2]
+
+        room = ((prev_high - price) / price) * 100
+
+        grade, summary = get_grade(m_type, w_type, d_type, m_failed, trigger)
 
         return {
             "Grade": grade,
             "Ticker": ticker,
-            "M/W/D": f"{m_dir[0]}/{w_dir[0]}/{d_dir[0]}",
+            "M/W/D": f"{m_type}/{w_type}/{d_type}",
+            "Trigger": "YES" if trigger else "—",
             "Summary": summary,
-            "Room (%)": round(room, 2),
+            "Room %": round(room, 2),
             "Sector": sector
         }
-    except: return None
+
+    except:
+        return None
 
 # --- UI ---
-st.title("🎯 The Strat Universal Sniper")
-st.write("Grading 80+ tickers to find the absolute best Failed 2-Down Monthly setups.")
+st.title("🎯 STRAT SNIPER PRO")
+st.write("Real Strat Logic + True Failed 2s + Daily Triggers")
 
-if st.button("🚀 Execute Full Market Scan"):
+if st.button("🚀 Scan Market"):
     results = []
-    bar = st.progress(0)
     total = sum(len(v) for v in SECTORS.values())
+    bar = st.progress(0)
+
     count = 0
-    
-    for s, tickers in SECTORS.items():
+    for sector, tickers in SECTORS.items():
         for t in tickers:
-            res = scan_strat(t, s)
-            if res: results.append(res)
+            res = scan_strat(t, sector)
+            if res:
+                results.append(res)
             count += 1
-            bar.progress(count/total)
-            if count % 15 == 0: time.sleep(0.1)
-    
+            bar.progress(count / total)
+
     if results:
         df = pd.DataFrame(results)
-        
-        # --- THE TOP TIER: A+ ONLY ---
-        st.write("## 💎 THE KILL ZONE: A+ SNIPER SETUPS")
-        aplus = df[df['Grade'] == "A+"]
-        if not aplus.empty:
-            st.table(aplus.sort_values(by="Room (%)", ascending=False))
-        else:
-            st.info("No A+ setups currently live. The market is trending or consolidating.")
 
-        # --- THE REST OF THE GRADES ---
+        # A+
+        st.write("## 💎 SNIPER SETUPS (A+)")
+        aplus = df[df["Grade"] == "A+"]
+        if not aplus.empty:
+            st.table(aplus.sort_values(by="Room %", ascending=False))
+        else:
+            st.info("No sniper setups right now.")
+
         st.write("---")
-        with st.expander("📈 Tier A (Clean Trends)", expanded=True):
-            st.table(df[df['Grade'] == "A"].sort_values(by="Room (%)", ascending=False))
-            
-        with st.expander("⚠️ Tier B (The Potential Hooks)", expanded=False):
-            st.write("These are Monthly 2-Downs that are Green on Week/Day. Watch for the Monthly Open Flip.")
-            st.table(df[df['Grade'] == "B"])
-        
-        with st.expander("🔄 Tier C (Mixed/No-Trade Zone)", expanded=False):
-            st.table(df[df['Grade'] == "C"])
-            
-        with st.expander("🩸 Tier D (Full Bearish)", expanded=False):
-            st.table(df[df['Grade'] == "D"])
+
+        with st.expander("📈 A (Trend Continuation)", expanded=True):
+            st.table(df[df["Grade"] == "A"].sort_values(by="Room %", ascending=False))
+
+        with st.expander("⚠️ B (Reversal Watch)"):
+            st.table(df[df["Grade"] == "B"])
+
+        with st.expander("🔄 C (Mixed)"):
+            st.table(df[df["Grade"] == "C"])
+
+        with st.expander("🩸 D (Bearish)"):
+            st.table(df[df["Grade"] == "D"])
