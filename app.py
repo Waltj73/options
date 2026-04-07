@@ -3,9 +3,16 @@ import yfinance as yf
 import pandas as pd
 import time
 
-st.set_page_config(page_title="Strat Trap Sniper", layout="wide")
+st.set_page_config(page_title="Strat Trap Sniper v3", layout="wide")
 
-NDX_100 = ["NVDA", "TSLA", "AAPL", "AMD", "MSFT", "META", "AMZN", "PLTR", "PYPL", "MARA", "COIN", "MSTR", "APP"] # Add more as needed
+# --- THE NASDAQ-100 LIST ---
+NDX_100 = [
+    "NVDA", "AAPL", "MSFT", "AMZN", "META", "GOOGL", "TSLA", "AVGO", "COST", "NFLX", 
+    "AMD", "ADBE", "CRM", "QCOM", "TXN", "MU", "INTC", "AMAT", "LRCX", "ADI", 
+    "PANW", "SNPS", "CDNS", "KLAC", "MAR", "PYPL", "ORLY", "MNST", "ADSK", "ANSS", 
+    "MARA", "PLTR", "SOFI", "RIOT", "COIN", "HOOD", "AFRM", "UPST", "RKLB", "NIO",
+    "SQ", "SHOP", "RBLX", "TSM", "DKNG", "PATH", "U", "AI", "GME", "AMC"
+]
 
 def flatten_df(df):
     if isinstance(df.columns, pd.MultiIndex):
@@ -14,67 +21,86 @@ def flatten_df(df):
 
 def scan_trap(ticker):
     try:
-        # Pull Monthly, Weekly, Daily
+        # Fetching Monthly, Weekly, Daily
         m = flatten_df(yf.download(ticker, period="6mo", interval="1mo", progress=False, auto_adjust=True))
-        w = flatten_df(yf.download(ticker, period="3mo", interval="1wk", progress=False, auto_adjust=True))
+        w = flatten_df(yf.download(ticker, period="1mo", interval="1wk", progress=False, auto_adjust=True))
         d = flatten_df(yf.download(ticker, period="1mo", interval="1d", progress=False, auto_adjust=True))
         
         if m.empty or w.empty or d.empty: return None
 
-        curr_price = d['Close'].iloc[-1]
+        curr_price = float(d['Close'].iloc[-1])
+        m_open = float(m['Open'].iloc[-1])
+        m_prev_low = float(m['Low'].iloc[-2])
+        m_prev_high = float(m['High'].iloc[-2])
         
-        # Monthly Logic
-        m_curr = m.iloc[-1]
-        m_prev = m.iloc[-2]
+        # 1. Monthly State (Did it go 2-Down?)
+        m_curr_low = float(m['Low'].iloc[-1])
+        is_m_2d = m_curr_low < m_prev_low
         
-        # Check if it IS a 2-Down Monthly
-        is_m_2d = curr_price < m_prev['Low'] or m_curr['Low'] < m_prev['Low']
-        
-        # Continuity Check
+        # 2. Continuity Directions
+        m_dir = "UP" if curr_price > m_open else "DOWN"
         w_dir = "UP" if curr_price > w['Open'].iloc[-1] else "DOWN"
         d_dir = "UP" if curr_price > d['Open'].iloc[-1] else "DOWN"
-        m_dir = "UP" if curr_price > m['Open'].iloc[-1] else "DOWN"
 
-        # The Trap Definition: Monthly is/was 2D, but Weekly/Daily are UP
+        # 3. FTC Check (The Visual Signal)
+        is_ftc_up = (m_dir == "UP" and w_dir == "UP" and d_dir == "UP")
+        ftc_signal = "✅" if is_ftc_up else "❌"
+
+        # 4. Trap Logic: Failed 2-Down
         is_trap = is_m_2d and w_dir == "UP" and d_dir == "UP"
 
-        status = "Normal"
+        # 5. Room to Run (%)
+        distance_to_target = m_prev_high - curr_price
+        pct_to_target = (distance_to_target / curr_price) * 100
+
+        setup = "Trend"
         if is_trap and m_dir == "UP":
-            status = "🔥 FAILED 2-DOWN (MTF Up)"
+            setup = "🔥 FAILED 2-DOWN"
         elif is_trap:
-            status = "⚠️ POTENTIAL TRAP (M-Open Pivot)"
+            setup = "⚠️ POTENTIAL TRAP"
 
         return {
+            "FTC": ftc_signal,
             "Ticker": ticker,
-            "Price": round(float(curr_price), 2),
-            "Monthly State": "2-Down" if is_m_2d else "Other",
+            "Price": round(curr_price, 2),
+            "Setup": setup,
             "M/W/D": f"{m_dir[0]}/{w_dir[0]}/{d_dir[0]}",
-            "Target (PMH)": round(float(m_prev['High']), 2),
-            "Setup": status
+            "Target (PMH)": round(m_prev_high, 2),
+            "Room to Run (%)": round(pct_to_target, 2)
         }
     except: return None
 
 # --- UI ---
-st.title("🎯 Strat Trap Sniper: Monthly Failed 2-Down")
-st.write("Hunting for Monthly 'Traps' where price is hooking back into Daily/Weekly Continuity.")
+st.title("🎯 Strat Trap Sniper v3")
+st.write("Targeting Monthly 'Failed 2-Downs' with Full Timeframe Continuity (FTC) Checkmarks.")
 
-if st.button("🔍 Scan for Monthly Traps"):
+if st.button("🚀 Run Full Advanced Scan"):
     results = []
     bar = st.progress(0)
+    status = st.empty()
+    
     for i, t in enumerate(NDX_100):
+        status.text(f"Analyzing {t}...")
         res = scan_trap(t)
         if res: results.append(res)
         bar.progress((i+1)/len(NDX_100))
     
+    status.empty()
+    
     if results:
         df = pd.DataFrame(results)
-        traps = df[df['Setup'] != "Normal"]
         
-        st.write("### 🚨 Active Monthly Reversal Setups")
-        if not traps.empty:
-            st.table(traps)
+        # Logic: Filter for "A+" setups (FTC is UP AND it's a Failed 2-Down)
+        aplus_setups = df[(df['FTC'] == "✅") & (df['Setup'] == "🔥 FAILED 2-DOWN")].sort_values(by="Room to Run (%)", ascending=False)
+        
+        st.write("### 💎 A+ Setups (FTC ✅ + Failed 2D Monthly 🔥)")
+        if not aplus_setups.empty:
+            st.table(aplus_setups)
         else:
-            st.info("No Monthly Failed 2-Down setups found right now.")
+            st.info("No A+ setups found where FTC is currently green on a Failed 2-Down Monthly.")
             
-        st.write("### 📊 Full List")
-        st.dataframe(df)
+        st.write("### 📊 Market Context (All Scanned Tickers)")
+        # Make the full list searchable
+        st.dataframe(df.sort_values(by="FTC", ascending=False))
+    else:
+        st.error("No data retrieved. Verify your internet connection and ticker list.")
