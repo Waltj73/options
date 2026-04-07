@@ -1,119 +1,101 @@
+import streamlit as st
 import yfinance as yf
 import pandas as pd
-import numpy as np
-import warnings
 
-# Clean console output
-warnings.filterwarnings('ignore')
+st.set_page_config(page_title="Nasdaq-100 Strat Sniper", layout="wide")
 
-def get_master_desk_report(watchlist):
-    """
-    MASTER INSTITUTIONAL RE-ENTRY SYSTEM
-    Core Logic: Price > 50SMA > 200SMA | Pullback to 21EMA | Volume Dry-up
-    """
-    results = []
-    
-    print(f"--- INITIALIZING MASTER SCANNER | {len(watchlist)} ASSETS ---")
-
-    for ticker in watchlist:
-        try:
-            # Download 1 year of daily data
-            df = yf.download(ticker, period="1y", interval="1d", progress=False)
-            
-            if df.empty or len(df) < 200:
-                continue
-
-            # --- DATA REPAIR & FLATTENING ---
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            df.index = pd.to_datetime(df.index)
-
-            # --- TECHNICAL CORE ---
-            # Exponential Averages (Fast Momentum)
-            df['8EMA'] = df['Close'].ewm(span=8, adjust=False).mean()
-            df['21EMA'] = df['Close'].ewm(span=21, adjust=False).mean()
-            
-            # Simple Moving Averages (Institutional Baseline)
-            df['50SMA'] = df['Close'].rolling(window=50).mean()
-            df['200SMA'] = df['Close'].rolling(window=200).mean()
-            
-            # Volume Analysis
-            df['Vol_Avg'] = df['Volume'].rolling(window=20).mean()
-
-            # --- DATA EXTRACTION (CURRENT vs PREVIOUS) ---
-            curr = df.iloc[-1]
-            prev = df.iloc[-2]
-            
-            price = float(curr['Close'])
-            ema21 = float(curr['21EMA'])
-            sma50 = float(curr['50SMA'])
-            sma200 = float(curr['200SMA'])
-            curr_vol = float(curr['Volume'])
-            avg_vol = float(curr['Vol_Avg'])
-
-            # --- PROFESSIONAL LOGIC GATES ---
-            # 1. Structural Integrity: Stock must be in a verified Stage 2 Uptrend
-            is_uptrend = price > sma50 and sma50 > sma200
-            
-            # 2. Value Zone: Price is pulling back to the 21EMA 'Safety Net'
-            # We look for price within 3% of the 21EMA
-            near_21ema = abs(price - ema21) / ema21 < 0.03
-            
-            # 3. Strat Trigger: Checking for an "Inside Day" (Scenario 1)
-            is_inside_day = (curr['High'] < prev['High']) and (curr['Low'] > prev['Low'])
-            
-            # 4. Volume Exhaustion: Sellers are getting tired
-            low_vol = curr_vol < (avg_vol * 1.05)
-
-            # --- THE SCORING ENGINE ---
-            if is_uptrend and near_21ema:
-                score = 5 # Baseline for Trend + Value
-                
-                if low_vol: score += 2        # Evidence of institutional holding
-                if is_inside_day: score += 2  # The Strat 'Scenario 1' setup
-                if price > curr['8EMA']: score += 1 # Recapturing short-term momentum
-                
-                # Risk/Reward Calculation
-                stop = round(ema21 * 0.97, 2) # 3% cushion below the EMA floor
-                risk = price - stop
-                target = round(price + (risk * 2), 2) # 2:1 Reward to Risk ratio
-
-                results.append({
-                    "TICKER": ticker,
-                    "PRICE": round(price, 2),
-                    "SCORE": score,
-                    "RATING": "A+" if score >= 9 else "B" if score >= 7 else "C",
-                    "SETUP": "Inside Day" if is_inside_day else "Pullback",
-                    "STOP": stop,
-                    "TARGET_2R": target,
-                    "VOL_STATUS": "Dry" if low_vol else "High"
-                })
-
-        except Exception:
-            continue
-
-    if not results:
-        return pd.DataFrame()
-
-    return pd.DataFrame(results).sort_values(by="SCORE", ascending=False)
-
-# --- WORKSTATION EXECUTION ---
-# This list contains "Institutional Leaders" - stocks big money loves to defend at the 21EMA.
-master_watchlist = [
-    "AAPL", "MSFT", "NVDA", "TSLA", "AMD", "GOOGL", "AMZN", "META", 
-    "NFLX", "AVGO", "ORCL", "COST", "SMCI", "UBER", "PANW", "QCOM", "PLTR"
+# --- THE NASDAQ-100 COMPONENTS (Updated for April 2026) ---
+NDX_100 = [
+    "ADBE", "AMD", "ABNB", "ALNY", "GOOGL", "GOOG", "AMZN", "AEP", "AMGN", "ADI",
+    "AAPL", "AMAT", "APP", "ARM", "ASML", "TEAM", "ADSK", "ADP", "AXON", "BKR",
+    "BKNG", "AVGO", "CDNS", "CHTR", "CTAS", "CSCO", "CCEP", "CTSH", "CMCSA", "CEG",
+    "CPRT", "CSGP", "COST", "CRWD", "CSX", "DDOG", "DXCM", "FANG", "DASH", "EA",
+    "EXC", "FAST", "FER", "FTNT", "GEHC", "GILD", "HON", "IDXX", "INSM", "INTC",
+    "INTU", "ISRG", "KDP", "KLAC", "KHC", "LRCX", "LIN", "MAR", "MRVL", "MELI",
+    "META", "MCHP", "MU", "MSFT", "MDLZ", "MPWR", "MNST", "NFLX", "NVDA", "NXPI",
+    "ORLY", "ODFL", "PCAR", "PLTR", "PANW", "PAYX", "PYPL", "PDD", "PEP", "QCOM",
+    "REGN", "ROP", "ROST", "STX", "SHOP", "SBUX", "MSTR", "SNPS", "TMUS", "TTWO",
+    "TSLA", "TXN", "TRI", "VRSK", "VRTX", "WMT", "WDC", "WDAY", "WBD", "XEL", "ZS"
 ]
 
-report = get_master_desk_report(master_watchlist)
+def get_strat_type(curr, prev):
+    if curr['High'] <= prev['High'] and curr['Low'] >= prev['Low']: return "1"
+    if curr['High'] > prev['High'] and curr['Low'] < prev['Low']: return "3"
+    if curr['High'] > prev['High']: return "2U"
+    if curr['Low'] < prev['Low']: return "2D"
+    return "2"
 
-if report.empty:
-    print("\n[REPORT] Market Condition: Overextended or Bearish. No Low-Risk entries found.")
-    print("Action: Preserve Capital. Wait for the pullback to the 21-day EMA.")
-else:
-    print("\n--- MASTER INSTITUTIONAL RE-ENTRY REPORT ---")
-    print(report.to_string(index=False))
+def get_h1_signal(df_h1):
+    if len(df_h1) < 3: return "None", "Neutral"
+    c, p, pp = df_h1.iloc[-1], df_h1.iloc[-2], df_h1.iloc[-3]
+    t_c, t_p = get_strat_type(c, p), get_strat_type(p, pp)
     
-    # Position Sizing Logic for the Top Pick
-    top = report.iloc[0]
-    print(f"\n--- EXECUTION GUIDE (TOP PICK: {top['TICKER']}) ---")
-    print(f"Risking $500 on this trade? Buy {int(500 / (top['PRICE'] - top['STOP']))} shares.")
+    if t_p == "2D" and t_c == "2U": return "🚀 2-2 Rev Up", "Bullish"
+    if t_p == "2U" and t_c == "2D": return "🩸 2-2 Rev Down", "Bearish"
+    if t_p == "1" and t_c == "2U": return "🎯 1-2 Up", "Bullish"
+    if t_p == "1" and t_c == "2D": return "⚠️ 1-2 Down", "Bearish"
+    return f"H1: {t_c}", "Neutral"
+
+def scan_strat(ticker):
+    try:
+        # Batch download for timeframes to keep speed up
+        d = yf.download(ticker, period="5d", interval="1d", progress=False, auto_adjust=True)
+        w = yf.download(ticker, period="1mo", interval="1wk", progress=False, auto_adjust=True)
+        m = yf.download(ticker, period="6mo", interval="1mo", progress=False, auto_adjust=True)
+        h1 = yf.download(ticker, period="5d", interval="1h", progress=False, auto_adjust=True)
+
+        if any(x.empty for x in [d, w, m, h1]): return None
+
+        price = h1['Close'].iloc[-1]
+        m_dir = "UP" if price > m['Open'].iloc[-1] else "DOWN"
+        w_dir = "UP" if price > w['Open'].iloc[-1] else "DOWN"
+        d_dir = "UP" if price > d['Open'].iloc[-1] else "DOWN"
+        
+        ftfc = "✅ FULL UP" if (m_dir == "UP" and w_dir == "UP" and d_dir == "UP") else \
+               "🛑 FULL DOWN" if (m_dir == "DOWN" and w_dir == "DOWN" and d_dir == "DOWN") else "Mixed"
+
+        signal, bias = get_h1_signal(h1)
+
+        return {
+            "Ticker": ticker,
+            "Price": round(float(price), 2),
+            "FTFC": ftfc,
+            "M/W/D": f"{m_dir[0]}/{w_dir[0]}/{d_dir[0]}",
+            "H1 Trigger": signal,
+            "Bias": bias
+        }
+    except: return None
+
+# --- UI ---
+st.title("🎯 Nasdaq-100 Strat Sniper")
+st.subheader("Swing Trading Dashboard: M/W/D Continuity + 1H Action")
+
+if st.button("🚀 Run Full NDX-100 Scan"):
+    results = []
+    progress_bar = st.progress(0)
+    status_msg = st.empty()
+
+    for i, ticker in enumerate(NDX_100):
+        status_msg.text(f"Analyzing {ticker}...")
+        res = scan_strat(ticker)
+        if res: results.append(res)
+        progress_bar.progress((i + 1) / len(NDX_100))
+
+    status_msg.empty()
+
+    if results:
+        df = pd.DataFrame(results)
+        
+        # Priority Filter: Only show setups with high-probability alignment
+        high_prob = df[(df['FTFC'].str.contains("FULL")) & (df['Bias'] != "Neutral")]
+        
+        st.write("### 🔥 Actionable Setups (FTFC Aligned)")
+        if not high_prob.empty:
+            st.table(high_prob)
+        else:
+            st.info("No 1-hour triggers currently align with M/W/D continuity.")
+
+        st.write("### 📊 All Scanned Tickers")
+        st.dataframe(df)
+    else:
+        st.error("No data retrieved. Verify API connection.")
