@@ -1,72 +1,73 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import numpy as np
+import time
+from squeeze import calculate_dual_squeeze
 
 st.set_page_config(page_title="Strat Sniper v6", layout="wide")
 
-# --- DATA HELPERS ---
-def get_clean_data(ticker, period, interval):
-    data = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=True)
-    if isinstance(data.columns, pd.MultiIndex):
-        data.columns = data.columns.get_level_values(0)
-    return data
+SECTORS = {
+    "Technology": ["NVDA", "AAPL", "MSFT", "AMD", "AVGO", "ORCL", "CRM", "QCOM", "MU", "PLTR"],
+    "Financials": ["JPM", "V", "MA", "BAC", "GS", "MS", "AXP", "PYPL", "COIN", "HOOD"],
+    "Consumer/Growth": ["AMZN", "TSLA", "META", "GOOGL", "NFLX", "SBUX", "ABNB", "SHOP", "DKNG", "MARA"],
+    "Energy & Materials": ["XOM", "CVX", "SLB", "COP", "MPC", "LIN", "APD", "FCX", "NEM", "PAAS"],
+    "Industrials": ["GE", "CAT", "RTX", "HON", "UNP", "LMT", "UPS", "BA", "DE", "GEHC"],
+    "Defensives": ["PG", "COST", "PEP", "KO", "WMT", "NEE", "SO", "DUK", "CEG", "EXC"],
+    "Healthcare": ["LLY", "UNH", "JNJ", "ABBV", "MRK", "TMO", "AMGN", "ISRG", "PFE", "GILD"]
+}
 
-# --- TAB 1: STRAT SNIPER ---
-def scan_strat(ticker):
-    try:
-        m = get_clean_data(ticker, "6mo", "1mo")
-        d = get_clean_data(ticker, "1mo", "1d")
-        curr = d['Close'].iloc[-1]
-        m_o = m['Open'].iloc[-1]
-        m_l2 = m['Low'].iloc[-2]
-        # Strat logic: Monthly trend + "2-Down" failure check
-        m_up = curr > m_o
-        is_2d = m['Low'].iloc[-1] < m_l2
-        grade = "A+" if m_up and is_2d else "A" if m_up else "C"
-        return {"Ticker": ticker, "Grade": grade, "Price": round(curr, 2), "Trend": "UP" if m_up else "DN"}
-    except: return None
+def flatten(df):
+    if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+    return df
 
-# --- TAB 3: SQUEEZE ENGINE ---
-def get_squeeze(ticker):
-    try:
-        df = get_clean_data(ticker, "6mo", "1d")
-        length = 20
-        df['ema21'] = df['Close'].ewm(span=21, adjust=False).mean()
-        m_avg = df['Close'].rolling(window=length).mean()
-        m_std = df['Close'].rolling(window=length).std()
-        # Bollinger vs Keltner
-        bb_u = m_avg + (2.0 * m_std)
-        bb_l = m_avg - (2.0 * m_std)
-        tr = pd.concat([df['High']-df['Low'], abs(df['High']-df['Close'].shift()), abs(df['Low']-df['Close'].shift())], axis=1).max(axis=1)
-        atr = tr.rolling(window=length).mean()
-        kc_u, kc_l = m_avg + (1.5 * atr), m_avg - (1.5 * atr)
-        
-        sq_on = (bb_u < kc_u) and (bb_l > kc_l)
-        last = df.iloc[-1]
-        direction = "Bullish" if last['Close'] > last['ema21'] else "Bearish"
-        
-        return {"Ticker": ticker, "Status": "🔴 SQUEEZE" if sq_on else "🟢 FIRE", "Dir": direction, "Price": round(last['Close'], 2)}
-    except: return None
-
-# --- UI SECTIONS ---
-t1, t2, t3 = st.tabs(["🎯 Strat Sniper", "🌊 Sector Flow", "💥 Squeeze Scanner"])
-
-SECTORS = {"Tech": ["NVDA", "AAPL", "MSFT", "AMD"], "Fin": ["JPM", "V", "MA", "PYPL"], "Def": ["PG", "KO", "AMGN", "LLY"]}
+t1, t2, t3 = st.tabs(["🎯 Strat Sniper", "🌊 Sector Flow", "💥 Dual Squeeze"])
 
 with t1:
-    if st.button("Run Strat"):
-        res = [scan_strat(t) for t in [tk for s in SECTORS.values() for tk in s]]
-        st.table(pd.DataFrame([r for r in res if r]))
+    st.title("🎯 Strat Sniper (Failed 2-Down Logic)")
+    if st.button("🚀 Run Full Sector Scan"):
+        results = []
+        all_t = [t for sub in SECTORS.values() for t in sub]
+        bar = st.progress(0)
+        for i, t in enumerate(all_t):
+            try:
+                m = flatten(yf.download(t, period="1y", interval="1mo", progress=False))
+                w = flatten(yf.download(t, period="3mo", interval="1wk", progress=False))
+                d = flatten(yf.download(t, period="1mo", interval="1d", progress=False))
+                curr = d['Close'].iloc[-1]
+                # Failed 2-Down Check: Monthly low was lower than previous, but price is back above Open
+                is_m_2d = m['Low'].iloc[-1] < m['Low'].iloc[-2]
+                m_up = curr > m['Open'].iloc[-1]
+                w_up = curr > w['Open'].iloc[-1]
+                d_up = curr > d['Open'].iloc[-1]
+                
+                grade = "A+" if m_up and w_up and d_up and is_2d else "A" if m_up and w_up and d_up else "C"
+                results.append({"Ticker": t, "Grade": grade, "Setup": "Failed 2D" if is_m_2d else "Trend", "Price": round(curr, 2)})
+            except: pass
+            bar.progress((i+1)/len(all_t))
+        if results: st.table(pd.DataFrame(results).sort_values("Grade"))
 
 with t2:
-    if st.button("Run Flow"):
-        data = yf.download(["XLK", "XLF", "XLY", "SPY"], period="6mo", progress=False)['Close']
-        if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
-        rs = data.div(data['SPY'], axis=0).pct_change(21).iloc[-1] * 100
-        st.table(rs)
+    st.title("🌊 Sector Money Flow (RS)")
+    if st.button("🔍 Analyze Rotation"):
+        etfs = {"XLK":"Tech","XLF":"Fin","XLE":"Energy","XLV":"Health","XLY":"Disc","XLI":"Indus","XLC":"Comm","XLP":"Staples"}
+        data = flatten(yf.download(list(etfs.keys())+["SPY"], period="7mo", progress=False)['Close'])
+        rs = data[list(etfs.keys())].div(data['SPY'], axis=0).pct_change(21).iloc[-1]*100
+        st.table(pd.DataFrame([{"Sector": etfs[k], "1M RS Flow": round(v, 2)} for k,v in rs.items()]).sort_values("1M RS Flow", ascending=False))
 
 with t3:
-    if st.button("Run Squeeze"):
-        res = [get_squeeze(t) for t in [tk for s in SECTORS.values() for tk in s]]
-        st.table(pd.DataFrame([r for r in res if r]))
+    st.title("💥 Dual Squeeze Sniper")
+    if st.button("🔍 Scan for Triggers"):
+        results = []
+        all_t = [t for sub in SECTORS.values() for t in sub]
+        bar = st.progress(0)
+        status = st.empty()
+        for i, t in enumerate(all_t):
+            status.text(f"Scanning {t}...")
+            res = calculate_dual_squeeze(t)
+            if res:
+                trig = "🚀 TRIGGERING" if res['d_sq'] and not res['h4_sq'] else "⏳ COILING" if res['d_sq'] and res['h4_sq'] else "🟢 FIRED"
+                results.append({"Ticker": t, "Status": trig, "Dir": res['dir'], "D_Sq": "ON" if res['d_sq'] else "OFF", "4H_Sq": "ON" if res['h4_sq'] else "OFF", "Mom": round(res['d_mom'], 2)})
+            bar.progress((i+1)/len(all_t))
+            time.sleep(0.05)
+        status.text("Scan Complete!")
+        if results: st.table(pd.DataFrame(results).sort_values("Status"))
