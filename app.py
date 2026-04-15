@@ -2,9 +2,9 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import time
-from squeeze import calculate_ttm_squeeze # Import from our new file
+from squeeze import calculate_ttm_squeeze 
 
-st.set_page_config(page_title="Strat Sniper v6", layout="wide")
+st.set_page_config(page_title="Strat Sniper v7.1", layout="wide")
 
 # --- DATA HELPERS ---
 def flatten_df(df):
@@ -122,6 +122,7 @@ with tab_squeeze:
                     results.append({
                         "Ticker": t,
                         "Status": "🔴 SQUEEZING" if row['squeeze_on'] else "🟢 FIRED",
+                        "Trend (21 EMA)": row['ema_status'],
                         "Momentum": round(row['momentum'], 4),
                         "Direction": "Bullish" if row['momentum'] > 0 else "Bearish"
                     })
@@ -131,6 +132,9 @@ with tab_squeeze:
             sq_df = pd.DataFrame(results)
             active = sq_df[sq_df['Status'] == "🔴 SQUEEZING"].sort_values(by="Momentum", ascending=False)
             st.subheader("Active Volatility Squeezes")
-            if not active.empty: st.table(active)
-            else: st.info("No active squeezes.")
-            with st.expander("View All Symbols"): st.dataframe(sq_df, use_container_width=True)
+            if not active.empty: 
+                st.table(active)
+            else: 
+                st.info("No active squeezes.")
+            with st.expander("View All Symbols"): 
+                st.dataframe(sq_df, use_container_width=True)
