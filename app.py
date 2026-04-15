@@ -42,14 +42,17 @@ def scan_strat(ticker, sector):
         w = flatten_df(yf.download(ticker, period="1mo", interval="1wk", progress=False, auto_adjust=True))
         d = flatten_df(yf.download(ticker, period="1mo", interval="1d", progress=False, auto_adjust=True))
         if m.empty or w.empty or d.empty: return None
+        
         curr_price = float(d['Close'].iloc[-1])
         m_open = float(m['Open'].iloc[-1])
         m_prev_low = float(m['Low'].iloc[-2])
         m_prev_high = float(m['High'].iloc[-2])
+        
         is_m_2d = float(m['Low'].iloc[-1]) < m_prev_low
         m_dir = "UP" if curr_price > m_open else "DOWN"
         w_dir = "UP" if curr_price > w['Open'].iloc[-1] else "DOWN"
         d_dir = "UP" if curr_price > d['Open'].iloc[-1] else "DOWN"
+        
         grade, summary = get_grade(m_dir, w_dir, d_dir, is_m_2d)
         room = ((m_prev_high - curr_price) / curr_price) * 100
         return {"Grade": grade, "Ticker": ticker, "M/W/D": f"{m_dir[0]}/{w_dir[0]}/{d_dir[0]}", 
@@ -110,30 +113,29 @@ with tab_flow:
             st.dataframe(flow_df.style.background_gradient(cmap='RdYlGn', subset=['1M RS Flow (%)', '3M RS Flow (%)']), use_container_width=True)
 
 with tab_squeeze:
-    st.title("💥 TTM Squeeze Scanner")
+    st.title("💥 TTM Dual-Timeframe Scanner")
     if st.button("🔍 Scan for Squeezes"):
         results = []
-        with st.spinner("Analyzing volatility bands..."):
-            all_tickers = [t for sublist in SECTORS.values() for t in sublist]
-            bar = st.progress(0)
-            for i, t in enumerate(all_tickers):
-                row = calculate_ttm_squeeze(t)
-                if row is not None:
-                    results.append({
-                        "Ticker": t,
-                        "Status": "🔴 SQUEEZING" if row['squeeze_on'] else "🟢 FIRED",
-                        "Momentum": round(row['momentum'], 4),
-                        "Direction": "Bullish" if row['momentum'] > 0 else "Bearish"
-                    })
-                bar.progress((i + 1) / len(all_tickers))
+        all_tickers = [t for sublist in SECTORS.values() for t in sublist]
+        bar = st.progress(0)
+        for i, t in enumerate(all_tickers):
+            row = calculate_ttm_squeeze(t)
+            if row is not None:
+                # Logic: Is the Daily squeezing? If so, has the 4H already fired? (The "PYPL" Handshake)
+                handshake = "🚀 TRIGGERING" if row['squeeze_on'] and not row['h4_squeeze'] else "⏳ COILING" if row['squeeze_on'] else "🟢 FIRED"
+                results.append({
+                    "Ticker": t,
+                    "Status": handshake,
+                    "Daily Sq": "RED" if row['squeeze_on'] else "GREEN",
+                    "4H Sq": "RED" if row['h4_squeeze'] else "GREEN",
+                    "Trend (21 EMA)": "Bullish" if row['price'] > row['ema21'] else "Bearish"
+                })
+            bar.progress((i + 1) / len(all_tickers))
+            time.sleep(0.01) # Small sleep to prevent API lockout
         
         if results:
             sq_df = pd.DataFrame(results)
-            active = sq_df[sq_df['Status'] == "🔴 SQUEEZING"].sort_values(by="Momentum", ascending=False)
-            st.subheader("Active Volatility Squeezes")
-            if not active.empty: 
-                st.table(active)
-            else: 
-                st.info("No active squeezes.")
-            with st.expander("View All Symbols"): 
+            st.subheader("High Probability Setups")
+            st.table(sq_df[sq_df['Status'].isin(["🚀 TRIGGERING", "⏳ COILING"])])
+            with st.expander("View Full Watchlist"):
                 st.dataframe(sq_df, use_container_width=True)
