@@ -4,7 +4,7 @@ import pandas as pd
 import time
 from squeeze import calculate_ttm_squeeze 
 
-st.set_page_config(page_title="Strat Sniper v7.1", layout="wide")
+st.set_page_config(page_title="Strat Sniper v7.0", layout="wide")
 
 # --- DATA HELPERS ---
 def flatten_df(df):
@@ -122,7 +122,6 @@ with tab_squeeze:
                     results.append({
                         "Ticker": t,
                         "Status": "🔴 SQUEEZING" if row['squeeze_on'] else "🟢 FIRED",
-                        "Trend (21 EMA)": row['ema_status'],
                         "Momentum": round(row['momentum'], 4),
                         "Direction": "Bullish" if row['momentum'] > 0 else "Bearish"
                     })
