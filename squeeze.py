@@ -4,26 +4,23 @@ import numpy as np
 
 def calculate_ttm_squeeze(ticker):
     try:
-        # Fetching enough data for the 20-period moving averages
         data = yf.download(ticker, period="6mo", interval="1d", progress=False, auto_adjust=True)
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
 
-        if data.empty: return None
+        if data.empty or len(data) < 20: return None
 
-        # --- TTM SQUEEZE PARAMETERS ---
         length = 20
         mult_bb = 2.0
         mult_kc = 1.5
 
-        # 1. Bollinger Bands
+        # Bollinger Bands
         m_avg = data['Close'].rolling(window=length).mean()
         m_std = data['Close'].rolling(window=length).std()
         data['bb_upper'] = m_avg + (mult_bb * m_std)
         data['bb_lower'] = m_avg - (mult_bb * m_std)
 
-        # 2. Keltner Channels (using ATR)
-        # Simplified ATR for the squeeze calculation
+        # Keltner Channels
         high_low = data['High'] - data['Low']
         high_close = np.abs(data['High'] - data['Close'].shift())
         low_close = np.abs(data['Low'] - data['Close'].shift())
@@ -34,17 +31,13 @@ def calculate_ttm_squeeze(ticker):
         data['kc_upper'] = m_avg + (mult_kc * atr)
         data['kc_lower'] = m_avg - (mult_kc * atr)
 
-        # 3. The Squeeze Logic
-        # Squeeze is ON if BB is inside KC
+        # Squeeze Logic
         data['squeeze_on'] = (data['bb_upper'] < data['kc_upper']) & (data['bb_lower'] > data['kc_lower'])
         
-        # 4. Momentum Histogram (Linear Regression of Close vs average of KC/High-Low)
-        # This is a simplified version of the TTM momentum oscillator
+        # Momentum Histogram
         avg_h_l_m = (data['High'].rolling(length).max() + data['Low'].rolling(length).min() + m_avg) / 3
-        data['momentum'] = data['Close'] - avg_h_l_m
-        # Smooth it
-        data['momentum'] = data['momentum'].rolling(window=length).mean()
+        data['momentum'] = (data['Close'] - avg_h_l_m).rolling(window=length).mean()
 
         return data.iloc[-1]
-    except Exception as e:
+    except:
         return None
