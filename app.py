@@ -1,21 +1,11 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import numpy as np
-import time
-from squeeze import calculate_ttm_squeeze # Ensure squeeze.py is in the same folder
+from squeeze import calculate_dual_squeeze
 
-# --- APP CONFIG ---
+# --- GLOBAL CONFIG ---
 st.set_page_config(page_title="Strat Sniper v6", layout="wide")
 
-# --- DATA HELPERS ---
-def flatten_df(df):
-    """Handles multi-index columns from yfinance downloads."""
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    return df
-
-# --- WATCHLIST DEFINITIONS ---
 SECTORS = {
     "Market Pillars & Metals": ["SPY", "QQQ", "GLD", "SLV", "PAAS"],
     "Technology": ["NVDA", "AAPL", "MSFT", "AMD", "AVGO", "ORCL", "CRM", "QCOM", "MU", "PLTR"],
@@ -26,6 +16,11 @@ SECTORS = {
     "Defensives": ["PG", "COST", "PEP", "KO", "WMT", "NEE", "SO", "DUK", "CEG", "EXC"],
     "Healthcare": ["LLY", "UNH", "JNJ", "ABBV", "MRK", "TMO", "AMGN", "ISRG", "PFE", "GILD"]
 }
+
+def flatten_df(df):
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    return df
 
 # --- TAB 1: STRAT LOGIC ---
 def get_grade(m_dir, w_dir, d_dir, is_m_2d):
@@ -44,135 +39,70 @@ def scan_strat(ticker, sector):
         m = flatten_df(yf.download(ticker, period="6mo", interval="1mo", progress=False, auto_adjust=True))
         w = flatten_df(yf.download(ticker, period="1mo", interval="1wk", progress=False, auto_adjust=True))
         d = flatten_df(yf.download(ticker, period="1mo", interval="1d", progress=False, auto_adjust=True))
-        
         if m.empty or w.empty or d.empty: return None
-        
-        curr_price = float(d['Close'].iloc[-1])
-        m_open = float(m['Open'].iloc[-1])
-        m_prev_low = float(m['Low'].iloc[-2])
-        m_prev_high = float(m['High'].iloc[-2])
-        
-        is_m_2d = float(m['Low'].iloc[-1]) < m_prev_low
-        m_dir = "UP" if curr_price > m_open else "DOWN"
-        w_dir = "UP" if curr_price > w['Open'].iloc[-1] else "DOWN"
-        d_dir = "UP" if curr_price > d['Open'].iloc[-1] else "DOWN"
-        
+        curr = float(d['Close'].iloc[-1])
+        is_m_2d = float(m['Low'].iloc[-1]) < float(m['Low'].iloc[-2])
+        m_dir = "UP" if curr > float(m['Open'].iloc[-1]) else "DOWN"
+        w_dir = "UP" if curr > float(w['Open'].iloc[-1]) else "DOWN"
+        d_dir = "UP" if curr > float(d['Open'].iloc[-1]) else "DOWN"
         grade, summary = get_grade(m_dir, w_dir, d_dir, is_m_2d)
-        room = ((m_prev_high - curr_price) / curr_price) * 100
-        
-        return {
-            "Grade": grade, "Ticker": ticker, "M/W/D": f"{m_dir[0]}/{w_dir[0]}/{d_dir[0]}", 
-            "Summary": summary, "Room (%)": round(room, 2), "Sector": sector
-        }
+        room = ((float(m['High'].iloc[-2]) - curr) / curr) * 100
+        return {"Grade": grade, "Ticker": ticker, "M/W/D": f"{m_dir[0]}/{w_dir[0]}/{d_dir[0]}", 
+                "Summary": summary, "Room (%)": round(room, 2), "Sector": sector}
     except: return None
 
 # --- UI TABS ---
-tab_sniper, tab_flow, tab_squeeze = st.tabs(["🎯 Strat Universal Sniper", "🌊 Sector Money Flow", "💥 TTM Squeeze"])
+tab_sniper, tab_flow, tab_squeeze = st.tabs(["🎯 Strat Universal Sniper", "🌊 Sector Money Flow", "💥 Dual-Timeframe Squeeze"])
 
-# --- TAB 1: STRAT SNIPER ---
 with tab_sniper:
     st.title("🎯 Strat Universal Sniper")
-    st.write("Identifying 'The Strat' setups with Full Timeframe Continuity.")
-
-    if st.button("🚀 Execute Full Market Scan"):
+    if st.button("🚀 Execute Strat Scan"):
         results = []
         bar = st.progress(0)
-        all_tickers = [(s, t) for s, tickers in SECTORS.items() for t in tickers]
-        total = len(all_tickers)
-        
-        for i, (s, t) in enumerate(all_tickers):
+        tickers = [(s, t) for s, ts in SECTORS.items() for t in ts]
+        for i, (s, t) in enumerate(tickers):
             res = scan_strat(t, s)
             if res: results.append(res)
-            bar.progress((i + 1) / total)
-        
+            bar.progress((i + 1) / len(tickers))
         if results:
             df = pd.DataFrame(results)
-            st.write("## 💎 THE KILL ZONE: A+ SNIPER SETUPS")
-            aplus = df[df['Grade'] == "A+"]
-            if not aplus.empty:
-                st.table(aplus.sort_values(by="Room (%)", ascending=False))
-            else:
-                st.info("No A+ setups currently live.")
+            st.write("## 💎 A+ SNIPER SETUPS")
+            st.table(df[df['Grade'] == "A+"].sort_values(by="Room (%)", ascending=False))
+            with st.expander("Show All Grades"): st.dataframe(df)
 
-            with st.expander("📈 Tier A (Clean Trends)", expanded=True):
-                st.table(df[df['Grade'] == "A"].sort_values(by="Room (%)", ascending=False))
-            with st.expander("⚠️ Tier B (The Potential Hooks)", expanded=False):
-                st.table(df[df['Grade'] == "B"])
-            with st.expander("🩸 Tier D (Full Bearish)", expanded=False):
-                st.table(df[df['Grade'] == "D"])
-
-# --- TAB 2: SECTOR FLOW ---
 with tab_flow:
     st.title("🌊 Sector Money Flow")
-    st.write("Analyzing Relative Strength (RS) against the S&P 500.")
-    
-    if st.button("🔍 Analyze Relative Strength"):
-        with st.spinner("Calculating Sector Alpha..."):
-            sector_etfs = {
-                "XLK": "Technology", "XLF": "Financials", "XLE": "Energy", 
-                "XLV": "Healthcare", "XLY": "Consumer Disc", "XLI": "Industrials", 
-                "XLC": "Communications", "XLP": "Consumer Staples", "XLB": "Materials", 
-                "XLRE": "Real Estate", "XLU": "Utilities"
-            }
-            tickers = list(sector_etfs.keys()) + ["SPY"]
-            data = yf.download(tickers, period="7mo", interval="1d", progress=False, auto_adjust=True)
-            data = flatten_df(data['Close'])
-            
-            rs_ratios = data[list(sector_etfs.keys())].div(data['SPY'], axis=0)
-            flow_1m = (rs_ratios.pct_change(21).iloc[-1]) * 100
-            flow_3m = (rs_ratios.pct_change(63).iloc[-1]) * 100
-            
-            flow_results = []
-            for ticker, name in sector_etfs.items():
-                flow_results.append({
-                    "Ticker": ticker, "Sector": name,
-                    "1M RS Flow (%)": round(flow_1m[ticker], 2),
-                    "3M RS Flow (%)": round(flow_3m[ticker], 2),
-                    "Status": "🚀 ACCELERATING" if flow_1m[ticker] > flow_3m[ticker] else "🐢 SLOWING"
-                })
-            
-            flow_df = pd.DataFrame(flow_results).sort_values(by="1M RS Flow (%)", ascending=False)
-            st.dataframe(flow_df.style.background_gradient(cmap='RdYlGn', subset=['1M RS Flow (%)', '3M RS Flow (%)']), use_container_width=True)
+    if st.button("🔍 Analyze RS Flow"):
+        etfs = {"XLK": "Tech", "XLF": "Fin", "XLE": "Energy", "XLV": "Health", "XLY": "Consum", "XLI": "Indus", "XLC": "Comm", "XLP": "Staples", "XLB": "Mat", "XLRE": "RealEstate", "XLU": "Util"}
+        data = flatten_df(yf.download(list(etfs.keys()) + ["SPY"], period="7mo", progress=False, auto_adjust=True)['Close'])
+        rs = data[list(etfs.keys())].div(data['SPY'], axis=0)
+        f1, f3 = rs.pct_change(21).iloc[-1]*100, rs.pct_change(63).iloc[-1]*100
+        res = [{"Ticker": k, "Sector": v, "1M Flow": round(f1[k], 2), "3M Flow": round(f3[k], 2), "Status": "🚀 ACCEL" if f1[k]>f3[k] else "🐢 SLOW"} for k,v in etfs.items()]
+        st.dataframe(pd.DataFrame(res).sort_values("1M Flow", ascending=False), use_container_width=True)
 
-# --- TAB 3: TTM SQUEEZE ---
 with tab_squeeze:
-    st.title("💥 TTM Squeeze Scanner")
-    st.info("Strategy: Only flags 'Bullish' if Price > 21 EMA + Momentum Up. 'Bearish' if Price < 21 EMA + Momentum Down.")
-
-    if st.button("🔍 Scan for Squeezes"):
+    st.title("💥 Dual-Timeframe Squeeze Sniper")
+    st.info("High Conviction = Daily Squeeze + 4H Trigger + Price/EMA Alignment.")
+    if st.button("🔍 Scan Dual Timeframes"):
         results = []
-        with st.spinner("Checking Volatility Bands and 21 EMA..."):
-            all_tickers_list = [t for sublist in SECTORS.values() for t in sublist]
-            bar = st.progress(0)
-            total_sq = len(all_tickers_list)
-            
-            for i, t in enumerate(all_tickers_list):
-                res = calculate_ttm_squeeze(t)
-                if res:
-                    results.append({
-                        "Ticker": t,
-                        "Status": "🔴 SQUEEZING" if res['squeeze_on'] else "🟢 FIRED",
-                        "Price": round(res['price'], 2),
-                        "21 EMA": round(res['ema21'], 2),
-                        "Momentum": round(res['momentum'], 4),
-                        "Direction": res['direction']
-                    })
-                bar.progress((i + 1) / total_sq)
-        
+        bar = st.progress(0)
+        all_tickers = [t for sublist in SECTORS.values() for t in sublist]
+        for i, t in enumerate(all_tickers):
+            res = calculate_dual_squeeze(t)
+            if res:
+                trigger = "Waiting"
+                if res['d_squeeze'] and not res['h4_squeeze']: trigger = "🚀 TRIGGERING (4H Fired)"
+                elif res['d_squeeze'] and res['h4_squeeze']: trigger = "⏳ COILING (Both)"
+                results.append({
+                    "Ticker": t, "1D Squeeze": "🔴 ON" if res['d_squeeze'] else "🟢 FIRED",
+                    "4H Squeeze": "🔴 ON" if res['h4_squeeze'] else "🟢 FIRED",
+                    "Trigger": trigger, "Direction": res['direction'], 
+                    "1D Mom": round(res['d_momentum'], 2), "4H Mom": round(res['h4_momentum'], 2)
+                })
+            bar.progress((i + 1) / len(all_tickers))
         if results:
-            sq_df = pd.DataFrame(results)
-            
-            # Filter for active squeezes that also have a directional signal (Price vs EMA match)
-            st.subheader("🔥 High Conviction Squeezes")
-            conviction = sq_df[
-                (sq_df['Status'] == "🔴 SQUEEZING") & 
-                (sq_df['Direction'] != "Neutral")
-            ].sort_values(by="Momentum", ascending=False)
-            
-            if not conviction.empty:
-                st.table(conviction)
-            else:
-                st.info("No active squeezes currently aligned with the 21 EMA and Momentum.")
-
-            with st.expander("View Full Watchlist (Inc. Neutral & Fired)"):
-                st.dataframe(sq_df, use_container_width=True)
+            df = pd.DataFrame(results)
+            st.subheader("🎯 High Conviction Alignment")
+            conviction = df[(df['Direction'] != "Neutral") & (df['1D Squeeze'] == "🔴 ON")]
+            st.table(conviction.sort_values("Trigger", ascending=False))
+            with st.expander("Full Market Results"): st.dataframe(df)
