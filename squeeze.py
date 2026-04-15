@@ -48,8 +48,7 @@ def calculate_ttm_squeeze(ticker):
             "h4_squeeze": h4_met['sq_on'],
             "momentum": d_met['mom'],
             "price": d_met['Close'],
-            "ema21": d_met['ema21'],
-            "ema_status": "ABOVE" if d_met['Close'] > d_met['ema21'] else "BELOW"
+            "ema21": d_met['ema21']
         }
     except:
         return None
