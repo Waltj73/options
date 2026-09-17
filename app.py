@@ -72,7 +72,6 @@ def scan_unusual_options(ticker, min_vol=500, min_vol_oi=2.0, min_dte=15, max_dt
         today = datetime.now().date()
         valid_expirations = []
         
-        # Filter expirations strictly by the user's DTE target window
         for exp_str in all_expirations:
             exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
             dte = (exp_date - today).days
@@ -244,7 +243,6 @@ with tab_options:
             
         if opt_results:
             flow_df = pd.DataFrame(opt_results)
-            # Filter by total dollar premium committed
             flow_df = flow_df[flow_df['Est Flow ($)'] >= min_dollar_flow].sort_values(by="Est Flow ($)", ascending=False)
             
             if not flow_df.empty:
@@ -252,23 +250,20 @@ with tab_options:
                 puts = flow_df[flow_df['Type'] == "PUT"]
                 
                 st.write(f"### 🚀 Bullish Flow (Calls | {dte_range[0]}–{dte_range[1]} DTE)")
-                st.write(f"### 🚀 Bullish Flow (Calls | {dte_range[0]}–{dte_range[1]} DTE)")
-if not calls.empty:
-    st.dataframe(
-        calls.style.format({"Est Flow ($)": "${:,.0f}", "Last": "${:.2f}", "Strike": "${:.2f}"}),
-        use_container_width=True
-    )
-else:
-    st.info("No calls matched your volume and premium filters.")
-    
-st.write(f"### 🩸 Bearish Flow (Puts | {dte_range[0]}–{dte_range[1]} DTE)")
-if not puts.empty:
-    st.dataframe(
-        puts.style.format({"Est Flow ($)": "${:,.0f}", "Last": "${:.2f}", "Strike": "${:.2f}"}),
-        use_container_width=True
-    )
-else:
-    st.info("No puts matched your volume and premium filters.")
+                if not calls.empty:
+                    st.dataframe(
+                        calls.style.format({"Est Flow ($)": "${:,.0f}", "Last": "${:.2f}", "Strike": "${:.2f}"}),
+                        use_container_width=True
+                    )
+                else:
+                    st.info("No calls matched your volume and premium filters.")
+                    
+                st.write(f"### 🩸 Bearish Flow (Puts | {dte_range[0]}–{dte_range[1]} DTE)")
+                if not puts.empty:
+                    st.dataframe(
+                        puts.style.format({"Est Flow ($)": "${:,.0f}", "Last": "${:.2f}", "Strike": "${:.2f}"}),
+                        use_container_width=True
+                    )
                 else:
                     st.info("No puts matched your volume and premium filters.")
             else:
