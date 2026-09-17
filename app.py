@@ -62,16 +62,26 @@ def scan_strat(ticker, sector):
     except Exception: 
         return None
 
-def scan_unusual_options(ticker, min_vol=500, min_vol_oi=2.0, min_dte=15, max_dte=60):
+def scan_unusual_options(ticker, min_vol=500, min_vol_oi=2.0, min_dte=15, max_dte=60, max_moneyness_pct=15.0):
     try:
         tk = yf.Ticker(ticker)
+        
+        # Get live or latest underlying price
+        fast_info = tk.fast_info
+        underlying_price = float(fast_info.last_price if hasattr(fast_info, 'last_price') and fast_info.last_price else 0)
+        if underlying_price == 0:
+            hist = tk.history(period="1d")
+            if not hist.empty:
+                underlying_price = float(hist['Close'].iloc[-1])
+        if underlying_price == 0:
+            return []
+
         all_expirations = tk.options
         if not all_expirations:
             return []
 
         today = datetime.now().date()
         valid_expirations = []
-        
         for exp_str in all_expirations:
             exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
             dte = (exp_date - today).days
@@ -91,34 +101,72 @@ def scan_unusual_options(ticker, min_vol=500, min_vol_oi=2.0, min_dte=15, max_dt
                 df = df.copy()
                 df['volume'] = df['volume'].fillna(0).astype(int)
                 df['openInterest'] = df['openInterest'].fillna(0).astype(int)
+                df['bid'] = df.get('bid', 0.0).fillna(0.0).astype(float)
+                df['ask'] = df.get('ask', 0.0).fillna(0.0).astype(float)
+                df['lastPrice'] = df.get('lastPrice', 0.0).fillna(0.0).astype(float)
+                df['impliedVolatility'] = df.get('impliedVolatility', 0.0).fillna(0.0).astype(float)
                 
+                # Minimum volume floor
                 active = df[df['volume'] >= min_vol].copy()
                 if active.empty:
                     continue
                 
-                active['vol_oi'] = active.apply(
-                    lambda r: round(r['volume'] / r['openInterest'], 2) if r['openInterest'] > 0 else round(float(r['volume']), 2),
-                    axis=1
-                )
-                
-                unusual = active[active['vol_oi'] >= min_vol_oi]
-                for _, r in unusual.iterrows():
-                    last_price = float(r.get('lastPrice', 0.0))
-                    volume = int(r['volume'])
-                    est_premium = round(volume * last_price * 100, 2)
+                for _, r in active.iterrows():
+                    strike = float(r['strike'])
+                    pct_from_money = ((strike - underlying_price) / underlying_price) * 100
                     
+                    # Discard deep ITM/OTM noise (dividend arb / deep synthetic trades)
+                    if abs(pct_from_money) > max_moneyness_pct:
+                        continue
+                    
+                    # Eliminate dead IV misprints
+                    iv = round(r['impliedVolatility'] * 100, 2)
+                    if iv < 10.0:
+                        continue
+
+                    vol = int(r['volume'])
+                    oi = int(r['openInterest'])
+                    vol_oi = round(vol / oi, 2) if oi > 0 else round(float(vol), 2)
+                    
+                    if vol_oi < min_vol_oi:
+                        continue
+
+                    last = r['lastPrice']
+                    bid = r['bid']
+                    ask = r['ask']
+                    
+                    # Determine initiation side based on NBBO execution
+                    if ask > 0 and last >= ask:
+                        side = "BUY (At/Above Ask)"
+                        bias = "BULLISH" if opt_type == "CALL" else "BEARISH"
+                    elif bid > 0 and last <= bid:
+                        side = "SELL (At/Below Bid)"
+                        bias = "BEARISH" if opt_type == "CALL" else "BULLISH"
+                    else:
+                        side = "MID / SPREAD"
+                        bias = "NEUTRAL"
+
+                    # Moneyness tag
+                    if opt_type == "CALL":
+                        m_state = "OTM" if strike > underlying_price else "ITM"
+                    else:
+                        m_state = "OTM" if strike < underlying_price else "ITM"
+
                     rows.append({
                         "Ticker": ticker,
                         "Type": opt_type,
+                        "Strike": strike,
+                        "Stock Price": round(underlying_price, 2),
+                        "Moneyness": f"{m_state} ({abs(pct_from_money):.1f}%)",
+                        "Side": side,
+                        "Directional Bias": bias,
                         "Expiry": exp,
                         "DTE": dte,
-                        "Strike": r['strike'],
-                        "Last": last_price,
-                        "Volume": volume,
-                        "Open Int": int(r['openInterest']),
-                        "Vol / OI": r['vol_oi'],
-                        "Est Flow ($)": est_premium,
-                        "IV (%)": round(r.get('impliedVolatility', 0) * 100, 2)
+                        "Volume": vol,
+                        "Open Int": oi,
+                        "Vol / OI": vol_oi,
+                        "Est Flow ($)": round(vol * last * 100, 2),
+                        "IV (%)": iv
                     })
         return rows
     except Exception:
@@ -199,12 +247,12 @@ with tab_squeeze:
 
 # --- TAB 4: UNUSUAL OPTIONS ACTIVITY ---
 with tab_options:
-    st.title("⚡ Unusual Options Activity")
-    st.caption("Filters for aggressive positioning across tactical expiration cycles.")
+    st.title("⚡ Directional Options Flow")
+    st.caption("Filters for buyer/seller aggression, moneyness within ±15%, and positive IV.")
     
     col1, col2 = st.columns(2)
     with col1:
-        dte_range = st.slider("Expiration Window (DTE)", min_value=7, max_value=90, value=(15, 60))
+        dte_range = st.slider("Expiration Window (DTE)", min_value=7, max_value=90, value=(15, 45))
     with col2:
         target_group = st.selectbox(
             "Universe to Scan", 
@@ -217,9 +265,9 @@ with tab_options:
     with col4:
         vol_oi_threshold = st.number_input("Min Vol / OI Ratio", min_value=1.0, value=2.0, step=0.5)
     with col5:
-        min_dollar_flow = st.number_input("Min Estimated Premium ($)", min_value=0, value=50000, step=25000)
+        min_dollar_flow = st.number_input("Min Estimated Flow ($)", min_value=0, value=50000, step=25000)
 
-    if st.button("🔥 Scan Flow"):
+    if st.button("🔥 Scan Directional Flow"):
         if target_group == "All Watchlist":
             scan_list = [t for sublist in SECTORS.values() for t in sublist]
         else:
@@ -234,7 +282,8 @@ with tab_options:
                 min_vol=min_contracts, 
                 min_vol_oi=vol_oi_threshold,
                 min_dte=dte_range[0],
-                max_dte=dte_range[1]
+                max_dte=dte_range[1],
+                max_moneyness_pct=15.0
             )
             if hits:
                 opt_results.extend(hits)
@@ -246,27 +295,37 @@ with tab_options:
             flow_df = flow_df[flow_df['Est Flow ($)'] >= min_dollar_flow].sort_values(by="Est Flow ($)", ascending=False)
             
             if not flow_df.empty:
-                calls = flow_df[flow_df['Type'] == "CALL"]
-                puts = flow_df[flow_df['Type'] == "PUT"]
+                bullish = flow_df[flow_df['Directional Bias'] == "BULLISH"]
+                bearish = flow_df[flow_df['Directional Bias'] == "BEARISH"]
+                neutral = flow_df[flow_df['Directional Bias'] == "NEUTRAL"]
                 
-                st.write(f"### 🚀 Bullish Flow (Calls | {dte_range[0]}–{dte_range[1]} DTE)")
-                if not calls.empty:
+                st.write("### 🚀 High-Conviction Bullish Flow (Bought Calls or Sold Puts)")
+                if not bullish.empty:
                     st.dataframe(
-                        calls.style.format({"Est Flow ($)": "${:,.0f}", "Last": "${:.2f}", "Strike": "${:.2f}"}),
+                        bullish.style.format({"Est Flow ($)": "${:,.0f}", "Strike": "${:.2f}", "Stock Price": "${:.2f}"}),
                         use_container_width=True
                     )
                 else:
-                    st.info("No calls matched your volume and premium filters.")
-                    
-                st.write(f"### 🩸 Bearish Flow (Puts | {dte_range[0]}–{dte_range[1]} DTE)")
-                if not puts.empty:
+                    st.info("No aggressive bullish flow detected.")
+
+                st.write("### 🩸 High-Conviction Bearish Flow (Bought Puts or Sold Calls)")
+                if not bearish.empty:
                     st.dataframe(
-                        puts.style.format({"Est Flow ($)": "${:,.0f}", "Last": "${:.2f}", "Strike": "${:.2f}"}),
+                        bearish.style.format({"Est Flow ($)": "${:,.0f}", "Strike": "${:.2f}", "Stock Price": "${:.2f}"}),
                         use_container_width=True
                     )
                 else:
-                    st.info("No puts matched your volume and premium filters.")
+                    st.info("No aggressive bearish flow detected.")
+
+                with st.expander("Midpoint / Spread Flow (Uncertain Direction)"):
+                    if not neutral.empty:
+                        st.dataframe(
+                            neutral.style.format({"Est Flow ($)": "${:,.0f}", "Strike": "${:.2f}", "Stock Price": "${:.2f}"}),
+                            use_container_width=True
+                        )
+                    else:
+                        st.write("No midpoint flow recorded.")
             else:
-                st.warning("Found contracts with high Vol/OI, but none met your Minimum Dollar Flow threshold.")
+                st.warning("Found contracts with elevated Vol/OI, but none met your Minimum Flow ($) threshold within ±15% of spot price.")
         else:
             st.warning("No contracts met the criteria in this expiration range.")
