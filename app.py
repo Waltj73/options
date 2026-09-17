@@ -2,6 +2,7 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import time
+from datetime import datetime
 from squeeze import calculate_ttm_squeeze 
 
 st.set_page_config(page_title="Strat Sniper v6", layout="wide")
@@ -61,15 +62,28 @@ def scan_strat(ticker, sector):
     except Exception: 
         return None
 
-def scan_unusual_options(ticker, min_vol=500, min_vol_oi=2.0, max_expirations=3):
+def scan_unusual_options(ticker, min_vol=500, min_vol_oi=2.0, min_dte=15, max_dte=60):
     try:
         tk = yf.Ticker(ticker)
-        expirations = tk.options[:max_expirations]
-        if not expirations:
+        all_expirations = tk.options
+        if not all_expirations:
+            return []
+
+        today = datetime.now().date()
+        valid_expirations = []
+        
+        # Filter expirations strictly by the user's DTE target window
+        for exp_str in all_expirations:
+            exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
+            dte = (exp_date - today).days
+            if min_dte <= dte <= max_dte:
+                valid_expirations.append((exp_str, dte))
+
+        if not valid_expirations:
             return []
 
         rows = []
-        for exp in expirations:
+        for exp, dte in valid_expirations:
             chain = tk.option_chain(exp)
             for opt_type, df in [("CALL", chain.calls), ("PUT", chain.puts)]:
                 if df.empty:
@@ -90,15 +104,21 @@ def scan_unusual_options(ticker, min_vol=500, min_vol_oi=2.0, max_expirations=3)
                 
                 unusual = active[active['vol_oi'] >= min_vol_oi]
                 for _, r in unusual.iterrows():
+                    last_price = float(r.get('lastPrice', 0.0))
+                    volume = int(r['volume'])
+                    est_premium = round(volume * last_price * 100, 2)
+                    
                     rows.append({
                         "Ticker": ticker,
                         "Type": opt_type,
                         "Expiry": exp,
+                        "DTE": dte,
                         "Strike": r['strike'],
-                        "Last Price": r.get('lastPrice', 0.0),
-                        "Volume": int(r['volume']),
-                        "Open Interest": int(r['openInterest']),
+                        "Last": last_price,
+                        "Volume": volume,
+                        "Open Int": int(r['openInterest']),
                         "Vol / OI": r['vol_oi'],
+                        "Est Flow ($)": est_premium,
                         "IV (%)": round(r.get('impliedVolatility', 0) * 100, 2)
                     })
         return rows
@@ -181,20 +201,26 @@ with tab_squeeze:
 # --- TAB 4: UNUSUAL OPTIONS ACTIVITY ---
 with tab_options:
     st.title("⚡ Unusual Options Activity")
-    st.caption("Scans near-term expiration chains for Volume exceeding Open Interest (Vol/OI).")
+    st.caption("Filters for aggressive positioning across tactical expiration cycles.")
     
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     with col1:
-        min_contracts = st.number_input("Min Contract Volume", min_value=100, value=750, step=250)
+        dte_range = st.slider("Expiration Window (DTE)", min_value=7, max_value=90, value=(15, 60))
     with col2:
-        vol_oi_threshold = st.number_input("Min Vol / OI Ratio", min_value=1.0, value=2.5, step=0.5)
-    with col3:
         target_group = st.selectbox(
             "Universe to Scan", 
             ["Technology", "Market Pillars & Metals", "Consumer/Growth", "Financials", "Energy & Materials", "Industrials", "Defensives", "Healthcare", "All Watchlist"]
         )
 
-    if st.button("🔥 Scan Unusual Flow"):
+    col3, col4, col5 = st.columns(3)
+    with col3:
+        min_contracts = st.number_input("Min Volume (Contracts)", min_value=100, value=500, step=100)
+    with col4:
+        vol_oi_threshold = st.number_input("Min Vol / OI Ratio", min_value=1.0, value=2.0, step=0.5)
+    with col5:
+        min_dollar_flow = st.number_input("Min Estimated Premium ($)", min_value=0, value=50000, step=25000)
+
+    if st.button("🔥 Scan Flow"):
         if target_group == "All Watchlist":
             scan_list = [t for sublist in SECTORS.values() for t in sublist]
         else:
@@ -204,28 +230,45 @@ with tab_options:
         bar = st.progress(0)
         
         for idx, sym in enumerate(scan_list):
-            hits = scan_unusual_options(sym, min_vol=min_contracts, min_vol_oi=vol_oi_threshold)
+            hits = scan_unusual_options(
+                sym, 
+                min_vol=min_contracts, 
+                min_vol_oi=vol_oi_threshold,
+                min_dte=dte_range[0],
+                max_dte=dte_range[1]
+            )
             if hits:
                 opt_results.extend(hits)
             bar.progress((idx + 1) / len(scan_list))
             time.sleep(0.05)
             
         if opt_results:
-            flow_df = pd.DataFrame(opt_results).sort_values(by="Vol / OI", ascending=False)
+            flow_df = pd.DataFrame(opt_results)
+            # Filter by total dollar premium committed
+            flow_df = flow_df[flow_df['Est Flow ($)'] >= min_dollar_flow].sort_values(by="Est Flow ($)", ascending=False)
             
-            calls = flow_df[flow_df['Type'] == "CALL"]
-            puts = flow_df[flow_df['Type'] == "PUT"]
-            
-            st.write(f"### 🚀 Bullish Skew (Calls with Vol/OI ≥ {vol_oi_threshold})")
-            if not calls.empty:
-                st.dataframe(calls, use_container_width=True)
-            else:
-                st.info("No unusual call volume detected with current parameters.")
+            if not flow_df.empty:
+                calls = flow_df[flow_df['Type'] == "CALL"]
+                puts = flow_df[flow_df['Type'] == "PUT"]
                 
-            st.write(f"### 🩸 Bearish Skew (Puts with Vol/OI ≥ {vol_oi_threshold})")
-            if not puts.empty:
-                st.dataframe(puts, use_container_width=True)
+                st.write(f"### 🚀 Bullish Flow (Calls | {dte_range[0]}–{dte_range[1]} DTE)")
+                if not calls.empty:
+                    st.dataframe(
+                        calls.style.format({"Est Flow ($)": "${:,.0", "Last": "${:.2f}", "Strike": "${:.2f}"}),
+                        use_container_width=True
+                    )
+                else:
+                    st.info("No calls matched your volume and premium filters.")
+                    
+                st.write(f"### 🩸 Bearish Flow (Puts | {dte_range[0]}–{dte_range[1]} DTE)")
+                if not puts.empty:
+                    st.dataframe(
+                        puts.style.format({"Est Flow ($)": "${:,.0f}", "Last": "${:.2f}", "Strike": "${:.2f}"}),
+                        use_container_width=True
+                    )
+                else:
+                    st.info("No puts matched your volume and premium filters.")
             else:
-                st.info("No unusual put volume detected with current parameters.")
+                st.warning("Found contracts with high Vol/OI, but none met your Minimum Dollar Flow threshold.")
         else:
-            st.warning("No contracts met the filter criteria. Try lowering the volume floor or Vol/OI ratio.")
+            st.warning("No contracts met the criteria in this expiration range.")
