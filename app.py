@@ -252,20 +252,23 @@ with tab_options:
                 puts = flow_df[flow_df['Type'] == "PUT"]
                 
                 st.write(f"### 🚀 Bullish Flow (Calls | {dte_range[0]}–{dte_range[1]} DTE)")
-                if not calls.empty:
-                    st.dataframe(
-                        calls.style.format({"Est Flow ($)": "${:,.0", "Last": "${:.2f}", "Strike": "${:.2f}"}),
-                        use_container_width=True
-                    )
-                else:
-                    st.info("No calls matched your volume and premium filters.")
-                    
-                st.write(f"### 🩸 Bearish Flow (Puts | {dte_range[0]}–{dte_range[1]} DTE)")
-                if not puts.empty:
-                    st.dataframe(
-                        puts.style.format({"Est Flow ($)": "${:,.0f}", "Last": "${:.2f}", "Strike": "${:.2f}"}),
-                        use_container_width=True
-                    )
+                st.write(f"### 🚀 Bullish Flow (Calls | {dte_range[0]}–{dte_range[1]} DTE)")
+if not calls.empty:
+    st.dataframe(
+        calls.style.format({"Est Flow ($)": "${:,.0f}", "Last": "${:.2f}", "Strike": "${:.2f}"}),
+        use_container_width=True
+    )
+else:
+    st.info("No calls matched your volume and premium filters.")
+    
+st.write(f"### 🩸 Bearish Flow (Puts | {dte_range[0]}–{dte_range[1]} DTE)")
+if not puts.empty:
+    st.dataframe(
+        puts.style.format({"Est Flow ($)": "${:,.0f}", "Last": "${:.2f}", "Strike": "${:.2f}"}),
+        use_container_width=True
+    )
+else:
+    st.info("No puts matched your volume and premium filters.")
                 else:
                     st.info("No puts matched your volume and premium filters.")
             else:
