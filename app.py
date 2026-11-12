@@ -339,10 +339,14 @@ with tab_sniper:
                     )
                 )
 
-# --- TAB 2: SECTOR FLOW ---
+# --- TAB 2: SECTOR FLOW & ROTATION ---
 with tab_flow:
-    st.title("🌊 Sector Money Flow")
-    if st.button("🔍 Analyze Relative Strength"):
+    st.title("🌊 Institutional Sector Rotation & Money Flow")
+    st.caption(
+        "Tracks Relative Strength (RS) vs. SPY across 1W, 1M, and 3M horizons to spot early capital rotation."
+    )
+
+    if st.button("🔍 Analyze Sector Rotation"):
         sector_etfs = {
             "XLK": "Technology",
             "XLF": "Financials",
@@ -356,24 +360,102 @@ with tab_flow:
             "XLRE": "Real Estate",
             "XLU": "Utilities",
         }
-        data = flatten_df(
-            yf.download(
-                list(sector_etfs.keys()) + ["SPY"],
-                period="7mo",
-                progress=False,
-                auto_adjust=True,
-            )["Close"]
-        )
+
+        tickers_to_pull = list(sector_etfs.keys()) + ["SPY"]
+        raw = yf.download(
+            tickers_to_pull, period="7mo", progress=False, auto_adjust=True
+        )["Close"]
+        data = flatten_df(raw)
+
+        # Calculate RS Ratio (Sector / SPY)
         rs_ratios = data[list(sector_etfs.keys())].div(data["SPY"], axis=0)
+
+        flow_1w = (rs_ratios.pct_change(5).iloc[-1]) * 100
         flow_1m = (rs_ratios.pct_change(21).iloc[-1]) * 100
-        flow_results = [
-            {"Ticker": t, "Sector": n, "1M RS Flow (%)": round(flow_1m[t], 2)}
-            for t, n in sector_etfs.items()
+        flow_3m = (rs_ratios.pct_change(63).iloc[-1]) * 100
+
+        # 21 EMA check on each Sector ETF
+        ema21 = data[list(sector_etfs.keys())].ewm(span=21, adjust=False).mean()
+
+        flow_results = []
+        for t, name in sector_etfs.items():
+            w_val = float(flow_1w[t])
+            m_val = float(flow_1m[t])
+            q_val = float(flow_3m[t])
+            spot_etf = float(data[t].iloc[-1])
+            ema_val = float(ema21[t].iloc[-1])
+            above_21 = spot_etf > ema_val
+
+            # Rotation Stage Classification
+            if m_val > 0 and w_val > 0:
+                stage = "🟢 LEADING (Inflow)"
+            elif m_val <= 0 and w_val > 0:
+                stage = "🚀 IMPROVING (Early Turn)"
+            elif m_val > 0 and w_val <= 0:
+                stage = "🟡 WEAKENING (Profit Taking)"
+            else:
+                stage = "🔴 LAGGING (Outflow)"
+
+            flow_results.append({
+                "Ticker": t,
+                "Sector": name,
+                "Rotation Stage": stage,
+                "Spot": round(spot_etf, 2),
+                "Above 21 EMA": "✅ Yes" if above_21 else "❌ No",
+                "1W RS (%)": round(w_val, 2),
+                "1M RS (%)": round(m_val, 2),
+                "3M RS (%)": round(q_val, 2),
+                "RS Accel (1W vs 1M)": round(w_val - (m_val / 4.0), 2),
+            })
+
+        flow_df = pd.DataFrame(flow_results).sort_values(
+            by="1M RS (%)", ascending=False
+        )
+
+        # Top Highlight Metrics
+        top_leader = flow_df.iloc[0]
+        fastest_turn = flow_df.sort_values(by="1W RS (%)", ascending=False).iloc[
+            0
         ]
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric(
+            "🏆 #1 Monthly Leader",
+            f"{top_leader['Ticker']} ({top_leader['Sector']})",
+            f"{top_leader['1M RS (%)']:+.2f}% vs SPY",
+        )
+        m2.metric(
+            "⚡ #1 Weekly Surge",
+            f"{fastest_turn['Ticker']} ({fastest_turn['Sector']})",
+            f"{fastest_turn['1W RS (%)']:+.2f}% (1W RS)",
+        )
+        m3.metric(
+            "📊 Sectors Above 21 EMA",
+            f"{(flow_df['Above 21 EMA'] == '✅ Yes').sum()} / {len(flow_df)}",
+            "Broad Market Breadth",
+        )
+
+        # RRG-Style Scatter Chart (1M RS vs 1W RS Momentum)
+        st.subheader("🧭 Relative Rotation Map (1M Trend vs. 1W Momentum)")
+        st.scatter_chart(
+            flow_df,
+            x="1M RS (%)",
+            y="1W RS (%)",
+            color="Rotation Stage",
+            size=120,
+            use_container_width=True,
+        )
+
+        # Detailed Data Table
+        st.subheader("📋 Full Sector Breakdown")
         st.dataframe(
-            pd.DataFrame(flow_results).sort_values(
-                by="1M RS Flow (%)", ascending=False
-            ),
+            flow_df.style.format({
+                "Spot": "${:.2f}",
+                "1W RS (%)": "{:+.2f}%",
+                "1M RS (%)": "{:+.2f}%",
+                "3M RS (%)": "{:+.2f}%",
+                "RS Accel (1W vs 1M)": "{:+.2f}%",
+            }),
             width="stretch",
             hide_index=True,
         )
@@ -428,6 +510,7 @@ with tab_squeeze:
 
             fmt_dict = {
                 "Spot": "${:.2f}",
+                "Momentum": "{:.2f}",
                 col_80: "${:.2f}",
                 col_50: "${:.2f}",
                 col_fl: "${:.2f}",
