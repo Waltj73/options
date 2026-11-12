@@ -96,7 +96,7 @@ def calculate_ttm_squeeze(ticker, trading_days_ahead=30, vol_lookback=20):
         else:
             sq_status = "🟢 OPEN / FIRED"
 
-        # 5. Forward-Projected 30D Probability Targets (Matches TOS `probs`)
+        # 5. Forward-Projected Probability Targets (Matches TOS `probs`)
         log_ret = np.log(df["Close"] / df["Close"].shift(1))
         sigma_daily = float(log_ret.tail(vol_lookback).std())
         sigma_annual = sigma_daily * np.sqrt(252)
@@ -109,7 +109,6 @@ def calculate_ttm_squeeze(ticker, trading_days_ahead=30, vol_lookback=20):
         upside_80_pct = ((tgt_80 - spot) / spot) * 100
 
         # 6. A+ Setup Grading Logic
-        # A+ Long: Stacked above 10/21 EMA, rising price, accelerating momentum (Cyan or Yellow hook), squeezing or recently fired
         if ema_stacked and price_rising and mom_rising and (mom > 0 or sq_on):
             setup_grade = "A+ LONG"
         elif (
